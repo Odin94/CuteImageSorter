@@ -272,8 +272,114 @@ button:disabled {
 }
 
 .source-card {
+  overflow: hidden;
   flex-wrap: wrap;
   padding: 20px;
+}
+
+.source-selection-summary {
+  display: grid;
+  width: calc(100% - 50px);
+  gap: 4px;
+  margin-left: 50px;
+}
+
+.source-selection-summary > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #795f68;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.source-selection-summary svg {
+  width: 13px;
+  height: 13px;
+  color: #bc6a80;
+}
+
+.source-selection-summary .selected-path {
+  width: auto;
+  margin: 0;
+}
+
+.source-drop-hint {
+  display: flex;
+  width: calc(100% - 50px);
+  align-items: center;
+  gap: 10px;
+  margin: 2px 0 0 50px;
+  border-top: 1px dashed #ead8d4;
+  padding-top: 13px;
+  color: #8b747c;
+}
+
+.source-drop-hint > svg {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  color: #cf7189;
+}
+
+.source-drop-hint > span {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.source-drop-hint strong {
+  color: #705b62;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.source-drop-hint small {
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+
+.source-drop-overlay {
+  position: absolute;
+  z-index: 3;
+  inset: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed #df7890;
+  border-radius: 17px;
+  color: #76545f;
+  background: color-mix(in srgb, #fde8ed 96%, white);
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.985);
+  transition:
+    opacity 160ms var(--ease-out),
+    transform 160ms var(--ease-out);
+}
+
+.source-drop-overlay > svg {
+  width: 28px;
+  height: 28px;
+  margin-right: 11px;
+  color: #c95f79;
+}
+
+.source-drop-overlay strong {
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.source-drop-overlay span {
+  margin-left: 9px;
+  color: #9a7a84;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.source-card.is-source-dragged-over .source-drop-overlay {
+  opacity: 1;
+  transform: scale(1);
 }
 
 .step-number {
@@ -1020,6 +1126,7 @@ button:disabled {
   }
 
   .drop-target.is-dragged-over,
+  .source-drop-overlay,
   .drop-target:hover,
   .finished-icon,
   .album-art {

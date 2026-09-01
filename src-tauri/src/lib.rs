@@ -13,7 +13,7 @@ use std::{
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
 };
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use uuid::Uuid;
@@ -36,7 +36,20 @@ enum MediaKind {
 #[derive(Clone, Debug)]
 struct FileRecord {
     path: PathBuf,
+    source_root: PathBuf,
     identity: FileIdentity,
+}
+
+#[derive(Clone, Debug)]
+struct SourceEntry {
+    path: PathBuf,
+    is_directory: bool,
+}
+
+#[derive(Clone, Debug)]
+struct ApprovedSources {
+    base: PathBuf,
+    entries: Vec<SourceEntry>,
 }
 
 #[derive(Clone, Debug)]
@@ -78,7 +91,6 @@ struct FileIdentity {
 #[derive(Debug)]
 struct Session {
     id: u64,
-    source: PathBuf,
     targets: HashMap<String, DirectoryRecord>,
     keep_structure: bool,
     files: HashMap<String, FileRecord>,
@@ -86,7 +98,8 @@ struct Session {
 
 #[derive(Debug, Default)]
 struct StateData {
-    approved_source: Option<PathBuf>,
+    approved_sources: Option<ApprovedSources>,
+    pending_source_drop: Option<(String, Vec<PathBuf>)>,
     approved_destinations: HashMap<String, PathBuf>,
     generated_outputs: HashSet<PathBuf>,
     next_session_id: u64,
@@ -118,6 +131,22 @@ struct PickerResult {
     path: String,
     name: String,
     selection_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceSelectionResult {
+    base_path: String,
+    label: String,
+    item_count: usize,
+    folder_count: usize,
+    file_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeSourceDrop {
+    token: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -350,8 +379,8 @@ fn verify_directory_record(record: &DirectoryRecord) -> Result<PathBuf, String> 
     Ok(canonical)
 }
 
-fn verify_file_record(record: &FileRecord, root: &Path) -> Result<PathBuf, String> {
-    if path_contains_symlink(&record.path, root)? {
+fn verify_file_record(record: &FileRecord) -> Result<PathBuf, String> {
+    if path_contains_symlink(&record.path, &record.source_root)? {
         return Err(
             "The file path changed through a link after scanning; it was not moved.".to_string(),
         );
@@ -360,7 +389,7 @@ fn verify_file_record(record: &FileRecord, root: &Path) -> Result<PathBuf, Strin
         .path
         .canonicalize()
         .map_err(|error| format!("Could not inspect {}: {error}", record.path.display()))?;
-    if !canonical.starts_with(root) {
+    if !canonical.starts_with(&record.source_root) {
         return Err("The file is no longer inside the approved source.".to_string());
     }
     let metadata = fs::metadata(&canonical)
@@ -448,7 +477,8 @@ fn canonical_key(path: &Path) -> Result<PathBuf, String> {
 }
 
 fn validate_targets(
-    source: &Path,
+    source_base: &Path,
+    source_directories: &[PathBuf],
     inputs: Vec<TargetInput>,
     keep_structure: bool,
     approved_destinations: &HashMap<String, PathBuf>,
@@ -480,7 +510,7 @@ fn validate_targets(
             if components.next().is_some() {
                 return Err("Automatic destinations cannot contain path separators.".to_string());
             }
-            source.join(name)
+            source_base.join(name)
         } else {
             let typed_path = input
                 .path
@@ -518,7 +548,7 @@ fn validate_targets(
             return Err(format!("{} is not a folder.", path.display()));
         }
         let key = canonical_key(&path)?;
-        if key == source {
+        if source_directories.iter().any(|source| &key == source) {
             return Err("The source folder cannot also be a destination.".to_string());
         }
         if !keys.insert(key) {
@@ -789,7 +819,7 @@ fn should_skip_directory(path: &Path, excluded: &HashSet<PathBuf>, marker_key: &
 }
 
 fn scan_exclusions(
-    source: &Path,
+    source_directories: &[PathBuf],
     targets: &HashMap<String, DirectoryRecord>,
     generated_outputs: HashSet<PathBuf>,
 ) -> HashSet<PathBuf> {
@@ -798,13 +828,18 @@ fn scan_exclusions(
         .map(|target| &target.path)
         .filter(|path| path.exists())
         .filter_map(|path| path.canonicalize().ok())
-        .filter(|path| path.starts_with(source) && path != source)
+        .filter(|path| {
+            source_directories
+                .iter()
+                .any(|source| path.starts_with(source) && path != source)
+        })
         .collect::<HashSet<_>>();
-    excluded.extend(
-        generated_outputs
-            .into_iter()
-            .filter(|path| path.exists() && path.starts_with(source) && path != source),
-    );
+    excluded.extend(generated_outputs.into_iter().filter(|path| {
+        path.exists()
+            && source_directories
+                .iter()
+                .any(|source| path.starts_with(source) && path != source)
+    }));
     excluded
 }
 
@@ -824,6 +859,42 @@ struct ScanContext<'a> {
     recursive: bool,
     excluded: &'a HashSet<PathBuf>,
     marker_key: &'a [u8; 32],
+}
+
+fn collect_media_file(
+    path: PathBuf,
+    metadata: fs::Metadata,
+    context: &ScanContext<'_>,
+    output: &mut Vec<CollectedFile>,
+) {
+    if is_hidden(&path) {
+        return;
+    }
+    let Some((kind, extension)) = classify(&path) else {
+        return;
+    };
+    let file_id = Uuid::new_v4().simple().to_string();
+    let relative_path = path.strip_prefix(context.root).unwrap_or(&path);
+    output.push(CollectedFile {
+        dto: MediaFile {
+            id: file_id.clone(),
+            media_url: media_url(context.media_base, context.session_id, &file_id),
+            name: path
+                .file_name()
+                .unwrap_or_else(|| path.as_os_str())
+                .to_string_lossy()
+                .into_owned(),
+            relative_path: relative_path.to_string_lossy().into_owned(),
+            extension,
+            kind,
+            size: metadata.len(),
+        },
+        record: FileRecord {
+            path,
+            source_root: context.root.to_path_buf(),
+            identity: FileIdentity::from_metadata(&metadata),
+        },
+    });
 }
 
 fn collect_media(
@@ -865,13 +936,9 @@ fn collect_media(
             }
             continue;
         }
-        if !file_type.is_file() || is_hidden(&path) {
+        if !file_type.is_file() {
             continue;
         }
-
-        let Some((kind, extension)) = classify(&path) else {
-            continue;
-        };
         let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
             Err(error) => {
@@ -879,24 +946,84 @@ fn collect_media(
                 continue;
             }
         };
-        let file_id = Uuid::new_v4().simple().to_string();
-        let relative_path = path.strip_prefix(context.root).unwrap_or(&path);
-        output.push(CollectedFile {
-            dto: MediaFile {
-                id: file_id.clone(),
-                media_url: media_url(context.media_base, context.session_id, &file_id),
-                name: entry.file_name().to_string_lossy().into_owned(),
-                relative_path: relative_path.to_string_lossy().into_owned(),
-                extension,
-                kind,
-                size: metadata.len(),
-            },
-            record: FileRecord {
-                path,
-                identity: FileIdentity::from_metadata(&metadata),
-            },
-        });
+        collect_media_file(path, metadata, context, output);
     }
+    Ok(())
+}
+
+fn approve_source_paths(
+    paths: Vec<PathBuf>,
+) -> Result<(ApprovedSources, SourceSelectionResult), String> {
+    if paths.is_empty() {
+        return Err("Drop at least one media file or folder.".to_string());
+    }
+    if paths.len() > 10_000 {
+        return Err("Drop fewer than 10,000 items at a time.".to_string());
+    }
+
+    let mut seen = HashSet::new();
+    let mut entries = Vec::new();
+    for path in paths {
+        let canonical = path
+            .canonicalize()
+            .map_err(|error| format!("Could not open {}: {error}", path.display()))?;
+        if !seen.insert(canonical.clone()) {
+            continue;
+        }
+        let metadata = fs::metadata(&canonical)
+            .map_err(|error| format!("Could not inspect {}: {error}", canonical.display()))?;
+        if metadata.is_dir() {
+            entries.push(SourceEntry {
+                path: canonical,
+                is_directory: true,
+            });
+        } else if metadata.is_file() && classify(&canonical).is_some() {
+            entries.push(SourceEntry {
+                path: canonical,
+                is_directory: false,
+            });
+        }
+    }
+    if entries.is_empty() {
+        return Err("No supported media files or folders were dropped.".to_string());
+    }
+
+    let first = &entries[0];
+    let base = if first.is_directory {
+        first.path.clone()
+    } else {
+        first
+            .path
+            .parent()
+            .ok_or_else(|| "The first dropped file has no parent folder.".to_string())?
+            .to_path_buf()
+    };
+    let folder_count = entries.iter().filter(|entry| entry.is_directory).count();
+    let file_count = entries.len() - folder_count;
+    let label = if entries.len() == 1 {
+        entries[0]
+            .path
+            .file_name()
+            .unwrap_or_else(|| entries[0].path.as_os_str())
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        format!("{} dropped items", entries.len())
+    };
+    let result = SourceSelectionResult {
+        base_path: base.to_string_lossy().into_owned(),
+        label,
+        item_count: entries.len(),
+        folder_count,
+        file_count,
+    };
+    Ok((ApprovedSources { base, entries }, result))
+}
+
+fn store_approved_sources(state: &AppState, sources: ApprovedSources) -> Result<(), String> {
+    let mut data = state.inner.lock().map_err(|_| lock_error())?;
+    data.approved_sources = Some(sources);
+    data.session = None;
     Ok(())
 }
 
@@ -916,7 +1043,7 @@ fn picker_result(path: PathBuf, selection_id: Option<String>) -> PickerResult {
 async fn choose_source(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
-) -> Result<Option<PickerResult>, String> {
+) -> Result<Option<SourceSelectionResult>, String> {
     let state = Arc::clone(state.inner());
     tauri::async_runtime::spawn_blocking(move || {
         let selected = app
@@ -935,15 +1062,38 @@ async fn choose_source(
         if !path.is_dir() {
             return Err("Choose an existing source folder.".to_string());
         }
-        state
-            .inner
-            .lock()
-            .map_err(|_| lock_error())?
-            .approved_source = Some(path.clone());
-        Ok(Some(picker_result(path, None)))
+        let (sources, result) = approve_source_paths(vec![path])?;
+        store_approved_sources(&state, sources)?;
+        Ok(Some(result))
     })
     .await
     .map_err(|error| format!("The folder picker stopped unexpectedly: {error}"))?
+}
+
+#[tauri::command]
+async fn accept_source_drop(
+    token: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<SourceSelectionResult, String> {
+    let state = Arc::clone(state.inner());
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = {
+            let mut data = state.inner.lock().map_err(|_| lock_error())?;
+            let (pending_token, paths) = data
+                .pending_source_drop
+                .take()
+                .ok_or_else(|| "That file drop is no longer available.".to_string())?;
+            if pending_token != token {
+                return Err("That file drop is no longer available.".to_string());
+            }
+            paths
+        };
+        let (sources, result) = approve_source_paths(paths)?;
+        store_approved_sources(&state, sources)?;
+        Ok(result)
+    })
+    .await
+    .map_err(|error| format!("The dropped items could not be accepted: {error}"))?
 }
 
 #[tauri::command]
@@ -985,39 +1135,72 @@ async fn scan_media(
     let state = Arc::clone(state.inner());
     tauri::async_runtime::spawn_blocking(move || {
         let _session_guard = state.move_lock.lock().map_err(|_| lock_error())?;
-        let (source, session_id, approved_destinations, generated_outputs) = {
+        let (sources, session_id, approved_destinations, generated_outputs) = {
             let mut data = state.inner.lock().map_err(|_| lock_error())?;
-            let source = data
-                .approved_source
+            let sources = data
+                .approved_sources
                 .clone()
-                .ok_or_else(|| "Choose a source folder first.".to_string())?;
+                .ok_or_else(|| "Choose or drop some source media first.".to_string())?;
             data.next_session_id = data.next_session_id.saturating_add(1).max(1);
             (
-                source,
+                sources,
                 data.next_session_id,
                 data.approved_destinations.clone(),
                 data.generated_outputs.clone(),
             )
         };
+        let source_directories = sources
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                if entry.is_directory {
+                    Some(entry.path.clone())
+                } else {
+                    entry.path.parent().map(Path::to_path_buf)
+                }
+            })
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
         let targets = validate_targets(
-            &source,
+            &sources.base,
+            &source_directories,
             request.targets,
             request.keep_structure,
             &approved_destinations,
         )?;
-        let excluded = scan_exclusions(&source, &targets, generated_outputs);
+        let excluded = scan_exclusions(&source_directories, &targets, generated_outputs);
 
         let mut collected = Vec::new();
         let mut warnings = Vec::new();
-        let scan_context = ScanContext {
-            root: &source,
-            media_base: &state.media_base,
-            session_id,
-            recursive: request.recursive,
-            excluded: &excluded,
-            marker_key: &state.marker_key,
-        };
-        collect_media(&source, &scan_context, &mut collected, &mut warnings)?;
+        for entry in &sources.entries {
+            let root = if entry.is_directory {
+                entry.path.as_path()
+            } else {
+                entry
+                    .path
+                    .parent()
+                    .ok_or_else(|| format!("{} has no parent folder.", entry.path.display()))?
+            };
+            let scan_context = ScanContext {
+                root,
+                media_base: &state.media_base,
+                session_id,
+                recursive: request.recursive,
+                excluded: &excluded,
+                marker_key: &state.marker_key,
+            };
+            if entry.is_directory {
+                collect_media(&entry.path, &scan_context, &mut collected, &mut warnings)?;
+            } else {
+                let metadata = fs::metadata(&entry.path).map_err(|error| {
+                    format!("Could not inspect {}: {error}", entry.path.display())
+                })?;
+                collect_media_file(entry.path.clone(), metadata, &scan_context, &mut collected);
+            }
+        }
+        let mut seen_paths = HashSet::new();
+        collected.retain(|file| seen_paths.insert(file.record.path.clone()));
         if !warnings.is_empty() {
             let summary = warnings.into_iter().take(3).collect::<Vec<_>>().join("\n");
             return Err(format!(
@@ -1041,7 +1224,6 @@ async fn scan_media(
             .collect::<Vec<_>>();
         state.inner.lock().map_err(|_| lock_error())?.session = Some(Session {
             id: session_id,
-            source,
             targets,
             keep_structure: request.keep_structure,
             files,
@@ -1640,7 +1822,7 @@ async fn move_media(
     let state = Arc::clone(state.inner());
     tauri::async_runtime::spawn_blocking(move || {
         let _move_guard = state.move_lock.lock().map_err(|_| lock_error())?;
-        let (record, source_root, target, keep_structure) = {
+        let (record, target, keep_structure) = {
             let data = state.inner.lock().map_err(|_| lock_error())?;
             let session = data
                 .session
@@ -1659,15 +1841,10 @@ async fn move_media(
                 .get(&request.target_id)
                 .ok_or_else(|| "That destination is not part of this session.".to_string())?
                 .clone();
-            (
-                record,
-                session.source.clone(),
-                target,
-                session.keep_structure,
-            )
+            (record, target, session.keep_structure)
         };
 
-        let source = verify_file_record(&record, &source_root)?;
+        let source = verify_file_record(&record)?;
         if !source.is_file() {
             return Err(format!("{} is no longer available.", source.display()));
         }
@@ -1719,15 +1896,15 @@ fn resolve_media_file(state: &AppState, request_path: &str) -> Option<(PathBuf, 
     if parts.next().is_some() {
         return None;
     }
-    let (record, root) = {
+    let record = {
         let data = state.inner.lock().ok()?;
         let session = data
             .session
             .as_ref()
             .filter(|session| session.id == session_id)?;
-        (session.files.get(file_id)?.clone(), session.source.clone())
+        session.files.get(file_id)?.clone()
     };
-    let path = verify_file_record(&record, &root).ok()?;
+    let path = verify_file_record(&record).ok()?;
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -1884,8 +2061,27 @@ pub fn run() {
     tauri::Builder::default()
         .manage(state)
         .plugin(tauri_plugin_dialog::init())
+        .on_window_event(|window, event| {
+            let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, position: _ }) =
+                event
+            else {
+                return;
+            };
+            if paths.is_empty() {
+                return;
+            }
+            let token = Uuid::new_v4().simple().to_string();
+            let state = window.state::<Arc<AppState>>();
+            let Ok(mut data) = state.inner.lock() else {
+                return;
+            };
+            data.pending_source_drop = Some((token.clone(), paths.clone()));
+            drop(data);
+            let _ = window.emit("native-source-drop", NativeSourceDrop { token });
+        })
         .invoke_handler(tauri::generate_handler![
             choose_source,
+            accept_source_drop,
             choose_destination,
             scan_media,
             move_media
@@ -1961,6 +2157,106 @@ mod tests {
     }
 
     #[test]
+    fn dropped_folders_and_media_files_are_approved_together() {
+        let root = sandbox("mixed-source-drop");
+        let album = root.join("album");
+        fs::create_dir_all(&album).expect("create album");
+        let song = root.join("song.mp3");
+        let note = root.join("notes.txt");
+        fs::write(&song, b"song").expect("write song");
+        fs::write(&note, b"not media").expect("write note");
+
+        let (sources, result) =
+            approve_source_paths(vec![album.clone(), song.clone(), note, song.clone()])
+                .expect("approve mixed drop");
+
+        assert_eq!(sources.entries.len(), 2);
+        assert_eq!(sources.base, album.canonicalize().expect("canonical album"));
+        assert_eq!(result.item_count, 2);
+        assert_eq!(result.folder_count, 1);
+        assert_eq!(result.file_count, 1);
+        fs::remove_dir_all(root).expect("remove sandbox");
+    }
+
+    #[test]
+    fn individually_selected_media_file_is_collected_under_its_parent() {
+        let root = sandbox("selected-media-file");
+        let media = root.join("chosen.wav");
+        fs::write(&media, b"audio").expect("write media");
+        let excluded = HashSet::new();
+        let context = ScanContext {
+            root: &root,
+            media_base: "http://127.0.0.1:1/test",
+            session_id: 1,
+            recursive: false,
+            excluded: &excluded,
+            marker_key: &TEST_MARKER_KEY,
+        };
+        let mut files = Vec::new();
+        collect_media_file(
+            media.clone(),
+            fs::metadata(&media).expect("media metadata"),
+            &context,
+            &mut files,
+        );
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].dto.relative_path, "chosen.wav");
+        assert_eq!(files[0].record.source_root, root);
+        fs::remove_dir_all(files[0].record.source_root.clone()).expect("remove sandbox");
+    }
+
+    #[test]
+    fn every_selected_source_folder_is_rejected_as_a_destination() {
+        let root = sandbox("multiple-source-target");
+        let first = root.join("first");
+        let second = root.join("second");
+        fs::create_dir_all(&first).expect("create first source");
+        fs::create_dir_all(&second).expect("create second source");
+        let first = first.canonicalize().expect("canonical first");
+        let second = second.canonicalize().expect("canonical second");
+
+        let result = validate_targets(
+            &first,
+            &[first.clone(), second.clone()],
+            vec![TargetInput {
+                id: "target".into(),
+                path: Some(second.to_string_lossy().into_owned()),
+                selection_id: None,
+                auto_name: None,
+            }],
+            false,
+            &HashMap::new(),
+        );
+
+        assert!(result.is_err());
+        fs::remove_dir_all(root).expect("remove sandbox");
+    }
+
+    #[test]
+    fn selected_file_parent_is_rejected_as_a_destination() {
+        let root = sandbox("selected-file-parent-target");
+        let media = root.join("photo.jpg");
+        fs::write(&media, b"photo").expect("write media");
+
+        let result = validate_targets(
+            &root,
+            std::slice::from_ref(&root),
+            vec![TargetInput {
+                id: "target".into(),
+                path: Some(root.to_string_lossy().into_owned()),
+                selection_id: None,
+                auto_name: None,
+            }],
+            false,
+            &HashMap::new(),
+        );
+
+        assert!(result.is_err());
+        fs::remove_dir_all(root).expect("remove sandbox");
+    }
+
+    #[test]
     fn concurrent_same_name_moves_never_overwrite() {
         let root = sandbox("concurrent");
         let left = root.join("left");
@@ -2020,6 +2316,7 @@ mod tests {
         let alias = first.join("..").join("first");
         let result = validate_targets(
             &source,
+            std::slice::from_ref(&source),
             vec![
                 TargetInput {
                     id: "a".into(),
@@ -2081,7 +2378,7 @@ mod tests {
                 path: target,
             },
         )]);
-        let excluded = scan_exclusions(&source, &targets, HashSet::new());
+        let excluded = scan_exclusions(std::slice::from_ref(&source), &targets, HashSet::new());
         assert!(excluded.is_empty());
         let mut files = Vec::new();
         let mut warnings = Vec::new();
@@ -2105,6 +2402,7 @@ mod tests {
         symlink(&outside, &linked).expect("create destination symlink");
         let result = validate_targets(
             &source.canonicalize().expect("canonical source"),
+            &[source.canonicalize().expect("canonical source")],
             vec![TargetInput {
                 id: "linked".into(),
                 path: Some(linked.to_string_lossy().into_owned()),
@@ -2421,13 +2719,19 @@ mod tests {
             TEST_MARKER_KEY,
         ));
         *state.inner.lock().expect("lock state") = StateData {
-            approved_source: Some(root.clone()),
+            approved_sources: Some(ApprovedSources {
+                base: root.clone(),
+                entries: vec![SourceEntry {
+                    path: root.clone(),
+                    is_directory: true,
+                }],
+            }),
+            pending_source_drop: None,
             approved_destinations: HashMap::new(),
             generated_outputs: HashSet::new(),
             next_session_id: 7,
             session: Some(Session {
                 id: 7,
-                source: root.clone(),
                 targets: HashMap::new(),
                 keep_structure: false,
                 files: HashMap::from([(
@@ -2437,6 +2741,7 @@ mod tests {
                             &fs::metadata(&media).expect("media metadata"),
                         ),
                         path: media,
+                        source_root: root.clone(),
                     },
                 )]),
             }),
@@ -2531,12 +2836,13 @@ mod tests {
                 &fs::metadata(&scanned_path).expect("scanned metadata"),
             ),
             path: scanned_path,
+            source_root: root.clone(),
         };
         fs::rename(&album, &old_album).expect("move original album");
         fs::write(outside.join("photo.jpg"), b"outside").expect("write outside file");
         symlink(&outside, &album).expect("replace album with symlink");
 
-        assert!(verify_file_record(&record, &root).is_err());
+        assert!(verify_file_record(&record).is_err());
         assert_eq!(
             fs::read(outside.join("photo.jpg")).expect("read outside"),
             b"outside"
@@ -2596,6 +2902,7 @@ mod tests {
         fs::create_dir_all(&selected).expect("create non-utf8 destination");
         let targets = validate_targets(
             &root,
+            std::slice::from_ref(&root),
             vec![TargetInput {
                 id: "chosen".into(),
                 path: None,
@@ -2621,6 +2928,7 @@ mod tests {
             .expect("canonical sandbox");
         let result = validate_targets(
             &root,
+            std::slice::from_ref(&root),
             vec![
                 TargetInput {
                     id: "upper".into(),

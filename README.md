@@ -4,7 +4,8 @@ A cozy, keyboard-first desktop app for sorting images, videos, and audio into up
 
 ## Features
 
-- Scan one folder, optionally including nested subfolders.
+- Browse for a folder or drag in folders, sets of files, or a mixture of both.
+- Scan selected folders, optionally including nested subfolders.
 - Sort into one to four destinations with the arrow keys, a click, or drag and drop.
 - Create missing destination folders automatically.
 - Move files on Rust worker threads while the next preview appears immediately.

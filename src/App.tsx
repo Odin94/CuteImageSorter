@@ -8,6 +8,7 @@ import {
   Check,
   ChevronLeft,
   FileAudio2,
+  Files,
   Folder,
   FolderHeart,
   FolderOpen,
@@ -79,6 +80,14 @@ type MoveResult = {
 
 type PickerResult = { path: string; name: string; selectionId?: string };
 type ScanResult = { sessionId: number; files: MediaFile[] };
+type SourceSelection = {
+  basePath: string;
+  label: string;
+  itemCount: number;
+  folderCount: number;
+  fileCount: number;
+};
+type NativeSourceDrop = { token: string };
 
 const targetPresets = [
   { label: "Favorites", color: "#f6a9b9" },
@@ -153,7 +162,9 @@ function unloadPreload(element: HTMLImageElement | HTMLMediaElement) {
 
 function App() {
   const [view, setView] = useState<AppView>("setup");
-  const [sourcePath, setSourcePath] = useState("");
+  const [sourceSelection, setSourceSelection] =
+    useState<SourceSelection | null>(null);
+  const [sourceDragActive, setSourceDragActive] = useState(false);
   const [targets, setTargets] = useState<TargetFolder[]>([
     makeTarget(0),
     makeTarget(1),
@@ -175,6 +186,7 @@ function App() {
   const preloadCache = useRef(
     new Map<string, HTMLImageElement | HTMLMediaElement>(),
   );
+  const sourcePath = sourceSelection?.basePath ?? "";
   const clearPreloads = useCallback(() => {
     preloadCache.current.forEach(unloadPreload);
     preloadCache.current.clear();
@@ -258,21 +270,80 @@ function App() {
     return () => unlisten?.();
   }, []);
 
+  const applySourceSelection = useCallback((selection: SourceSelection) => {
+    setSourceSelection(selection);
+    setTargets((currentTargets) =>
+      currentTargets.map((target) => ({
+        ...target,
+        path:
+          target.pathMode === "auto"
+            ? joinPath(selection.basePath, target.label)
+            : target.path,
+      })),
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let disposed = false;
+    let unlistenDrag: (() => void) | undefined;
+    let unlistenDrop: (() => void) | undefined;
+    const appWindow = getCurrentWindow();
+
+    void Promise.all([
+      appWindow.onDragDropEvent((event) => {
+        if (view !== "setup" || isScanning) return;
+        if (event.payload.type === "enter") setSourceDragActive(true);
+        if (event.payload.type === "leave" || event.payload.type === "drop")
+          setSourceDragActive(false);
+      }),
+      appWindow.listen<NativeSourceDrop>(
+        "native-source-drop",
+        ({ payload }) => {
+          if (view !== "setup" || isScanning) return;
+          setSourceDragActive(false);
+          void invoke<SourceSelection>("accept_source_drop", {
+            token: payload.token,
+          })
+            .then((selection) => {
+              applySourceSelection(selection);
+              toast.success("Ready to sort your dropped media", {
+                description:
+                  selection.itemCount === 1
+                    ? selection.label
+                    : `${selection.folderCount} folder${selection.folderCount === 1 ? "" : "s"} and ${selection.fileCount} file${selection.fileCount === 1 ? "" : "s"}`,
+              });
+            })
+            .catch((error: unknown) => {
+              toast.error("Couldn’t use those dropped items", {
+                description: errorMessage(error),
+              });
+            });
+        },
+      ),
+    ]).then(([dragCleanup, dropCleanup]) => {
+      if (disposed) {
+        dragCleanup();
+        dropCleanup();
+        return;
+      }
+      unlistenDrag = dragCleanup;
+      unlistenDrop = dropCleanup;
+    });
+
+    return () => {
+      disposed = true;
+      unlistenDrag?.();
+      unlistenDrop?.();
+      setSourceDragActive(false);
+    };
+  }, [applySourceSelection, isScanning, view]);
+
   const chooseSource = async () => {
     try {
-      const selected = await invoke<PickerResult | null>("choose_source");
+      const selected = await invoke<SourceSelection | null>("choose_source");
       if (!selected) return;
-      const path = selected.path;
-      setSourcePath(path);
-      setTargets((currentTargets) =>
-        currentTargets.map((target) => ({
-          ...target,
-          path:
-            target.pathMode === "auto"
-              ? joinPath(path, target.label)
-              : target.path,
-        })),
-      );
+      applySourceSelection(selected);
     } catch (error) {
       toast.error("Couldn’t open that folder", {
         description: errorMessage(error),
@@ -511,7 +582,8 @@ function App() {
 
         {view === "setup" ? (
           <SetupView
-            sourcePath={sourcePath}
+            sourceSelection={sourceSelection}
+            sourceDragActive={sourceDragActive}
             targets={targets}
             recursive={recursive}
             keepStructure={keepStructure}
@@ -550,7 +622,8 @@ function App() {
 }
 
 type SetupViewProps = {
-  sourcePath: string;
+  sourceSelection: SourceSelection | null;
+  sourceDragActive: boolean;
   targets: TargetFolder[];
   recursive: boolean;
   keepStructure: boolean;
@@ -566,7 +639,8 @@ type SetupViewProps = {
 };
 
 function SetupView({
-  sourcePath,
+  sourceSelection,
+  sourceDragActive,
   targets,
   recursive,
   keepStructure,
@@ -580,6 +654,7 @@ function SetupView({
   onKeepStructureChange,
   onStart,
 }: SetupViewProps) {
+  const sourcePath = sourceSelection?.basePath ?? "";
   return (
     <main
       className="setup-view"
@@ -592,16 +667,21 @@ function SetupView({
         </div>
         <h1>Let’s sort your little treasures.</h1>
         <p>
-          Pick a folder, name a few cozy corners, then flick each file home with
-          your arrow keys.
+          Drop folders or a handful of files, name a few cozy corners, then
+          flick each treasure home with your arrow keys.
         </p>
       </section>
 
-      <section className="setup-card source-card">
+      <section
+        className={cn(
+          "setup-card source-card",
+          sourceDragActive && "is-source-dragged-over",
+        )}
+      >
         <div className="step-number">1</div>
         <div className="setup-card-copy">
-          <h2>Choose your media folder</h2>
-          <p>Images, videos, and audio are all welcome.</p>
+          <h2>Choose folders or media files</h2>
+          <p>Mix images, videos, and audio from one or many places.</p>
         </div>
         <Button
           variant={sourcePath ? "secondary" : "default"}
@@ -609,13 +689,34 @@ function SetupView({
           onClick={onChooseSource}
         >
           {sourcePath ? <FolderOpen /> : <FolderHeart />}
-          {sourcePath ? basename(sourcePath) : "Open a folder"}
+          {sourceSelection ? sourceSelection.label : "Browse for a folder"}
         </Button>
-        {sourcePath && (
-          <p className="selected-path" title={sourcePath}>
-            {sourcePath}
-          </p>
+        {sourceSelection && (
+          <div className="source-selection-summary">
+            <span>
+              <Files />
+              {sourceSelection.folderCount} folder
+              {sourceSelection.folderCount === 1 ? "" : "s"} ·{" "}
+              {sourceSelection.fileCount} file
+              {sourceSelection.fileCount === 1 ? "" : "s"}
+            </span>
+            <p className="selected-path" title={sourcePath}>
+              Default destination: {sourcePath}
+            </p>
+          </div>
         )}
+        <div className="source-drop-hint">
+          <FolderHeart />
+          <span>
+            <strong>Drop folders or a set of files</strong>
+            <small>You can mix both. Duplicate paths are skipped.</small>
+          </span>
+        </div>
+        <div className="source-drop-overlay" aria-hidden="true">
+          <FolderHeart />
+          <strong>Drop your media here</strong>
+          <span>Folders and file selections are both welcome</span>
+        </div>
       </section>
 
       <section className="setup-card destinations-card">
