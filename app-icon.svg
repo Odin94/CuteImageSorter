@@ -5,23 +5,8 @@
       <stop offset="0.55" stop-color="#E8C8EC"/>
       <stop offset="1" stop-color="#BDE2D2"/>
     </linearGradient>
-    <filter id="shadow" x="44" y="56" width="424" height="412" filterUnits="userSpaceOnUse">
-      <feDropShadow dx="0" dy="18" stdDeviation="16" flood-color="#9C6377" flood-opacity="0.22"/>
-    </filter>
   </defs>
   <rect width="512" height="512" rx="116" fill="url(#bg)"/>
-  <g filter="url(#shadow)">
-    <path d="M116 198C116 179.222 131.222 164 150 164H230L264 198H362C380.778 198 396 213.222 396 232V350C396 368.778 380.778 384 362 384H150C131.222 384 116 368.778 116 350V198Z" fill="#FFFDFB"/>
-    <path d="M152 226L178 178L213 213" fill="#F3A7B7"/>
-    <path d="M360 226L334 178L299 213" fill="#F3A7B7"/>
-    <path d="M152 258C152 209.399 191.399 170 240 170H272C320.601 170 360 209.399 360 258V296C360 349.019 317.019 392 264 392H248C194.981 392 152 349.019 152 296V258Z" fill="#F5B4C2"/>
-    <ellipse cx="218" cy="274" rx="10" ry="13" fill="#76535F"/>
-    <ellipse cx="294" cy="274" rx="10" ry="13" fill="#76535F"/>
-    <path d="M239 311C250.333 322.333 261.667 322.333 273 311" stroke="#76535F" stroke-width="10" stroke-linecap="round"/>
-    <path d="M250 298L256 305L262 298" stroke="#76535F" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
-    <ellipse cx="188" cy="302" rx="18" ry="10" fill="#ED8FA5" fill-opacity="0.55"/>
-    <ellipse cx="324" cy="302" rx="18" ry="10" fill="#ED8FA5" fill-opacity="0.55"/>
-  </g>
   <path d="M94 118L101 136L119 143L101 150L94 168L87 150L69 143L87 136L94 118Z" fill="#FFFDF7"/>
   <path d="M411 340L417 355L432 361L417 367L411 382L405 367L390 361L405 355L411 340Z" fill="#FFFDF7"/>
 </svg>
