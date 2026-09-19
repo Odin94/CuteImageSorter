@@ -32,6 +32,7 @@ import {
 } from "react";
 import { toast, Toaster } from "sonner";
 
+import { CollageEditor } from "@/components/CollageEditor";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
@@ -52,7 +53,7 @@ import {
 } from "@/lib/sorting";
 
 type MediaKind = "image" | "video" | "audio";
-type AppView = "setup" | "sorting";
+type AppView = "setup" | "sorting" | "collage";
 
 type MediaFile = {
   id: string;
@@ -567,6 +568,22 @@ function App() {
           toastOptions={{ className: "cute-toast" }}
         />
         <header className="titlebar" data-tauri-drag-region>
+          <nav className="app-mode-switch" aria-label="Workspace">
+            <button
+              aria-pressed={view !== "collage"}
+              disabled={pendingMoves > 0 || isScanning}
+              onClick={() => setView(sessionId === null ? "setup" : "sorting")}
+            >
+              Sort
+            </button>
+            <button
+              aria-pressed={view === "collage"}
+              disabled={pendingMoves > 0 || isScanning}
+              onClick={() => setView("collage")}
+            >
+              Collage
+            </button>
+          </nav>
           <div className="brand" data-tauri-drag-region>
             <div className="brand-mark" aria-hidden="true">
               <span>•ᴗ•</span>
@@ -580,7 +597,8 @@ function App() {
           </div>
         </header>
 
-        {view === "setup" ? (
+        <CollageEditor active={view === "collage"} />
+        {view === "collage" ? null : view === "setup" ? (
           <SetupView
             sourceSelection={sourceSelection}
             sourceDragActive={sourceDragActive}

@@ -1,0 +1,532 @@
+.app-mode-switch {
+  position: absolute;
+  left: 20px;
+  display: flex;
+  gap: 4px;
+  -webkit-app-region: no-drag;
+}
+.app-mode-switch button {
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #715b64;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 750;
+}
+.app-mode-switch button[aria-pressed="true"] {
+  background: #f8dce4;
+  color: #853d52;
+}
+.collage-editor {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--background);
+  color: #493f43;
+}
+.collage-editor[hidden] {
+  display: none;
+}
+.collage-editor button:focus-visible,
+.collage-editor [tabindex]:focus-visible,
+.collage-editor input:focus-visible,
+.collage-editor select:focus-visible {
+  outline: 2px solid #a34161;
+  outline-offset: 3px;
+}
+.collage-editor ::selection {
+  background: #f8dce4;
+  color: #493f43;
+}
+.collage-editor input {
+  accent-color: #a34161;
+  caret-color: #a34161;
+}
+.collage-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+}
+.collage-toolbar h1 {
+  margin: 0;
+  font-size: 23px;
+  letter-spacing: -0.025em;
+  font-weight: 850;
+}
+.collage-toolbar p {
+  margin: 3px 0 0;
+  color: #79636b;
+  font-size: 12px;
+}
+.collage-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.collage-body {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr) 232px;
+  min-height: 0;
+  flex: 1;
+}
+.collage-library,
+.collage-inspector {
+  padding: 20px 16px;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #d1adb7 transparent;
+}
+.collage-library {
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+.collage-inspector {
+  border-left: 1px solid var(--border);
+}
+.collage-section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+.collage-section-heading h2,
+.collage-layouts h2 {
+  font-size: 13px;
+  font-weight: 800;
+  margin: 0;
+}
+.collage-section-heading span {
+  font-size: 11px;
+  color: #79636b;
+  font-variant-numeric: tabular-nums;
+}
+.import-actions {
+  display: grid;
+  gap: 7px;
+}
+.import-actions button {
+  justify-content: flex-start;
+  font-size: 12px;
+}
+.collage-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  margin-top: 15px;
+}
+.collage-hint,
+.collage-format-note {
+  font-size: 11px;
+  line-height: 1.6;
+  color: #79636b;
+}
+.collage-thumbnails {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+  margin: 12px 0 20px;
+}
+.collage-thumbnails button {
+  position: relative;
+  min-width: 0;
+  padding: 3px;
+  border: 1px solid var(--border);
+  background: #fffefd;
+  border-radius: 8px;
+}
+.collage-thumbnails button.is-selected {
+  border-color: #a34161;
+  background: #fce7ec;
+}
+.collage-thumbnails img {
+  width: 100%;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+.collage-thumbnails span {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  font-size: 10px;
+  background: #fff;
+  color: #493f43;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.collage-thumbnails p {
+  margin: 3px 2px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 9px;
+}
+.collage-format-note {
+  margin-top: auto;
+  font-size: 10px;
+}
+.collage-workspace {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #d1adb7 transparent;
+}
+.collage-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 240px;
+  padding: 30px;
+  background: #f1e9e5;
+  overflow: hidden;
+}
+.collage-sheet {
+  position: relative;
+  width: min(100%, calc((100vh - 370px) * 4 / 3));
+  max-height: 100%;
+  flex-shrink: 0;
+  box-shadow: 0 8px 28px rgb(73 63 67 / 12%);
+}
+.collage-tile {
+  position: absolute;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.collage-tile img {
+  position: absolute;
+  max-width: none;
+  pointer-events: none;
+}
+.collage-tile.is-selected {
+  outline: 2px solid #a34161;
+  outline-offset: 2px;
+  z-index: 1;
+}
+.collage-tile:active {
+  cursor: grabbing;
+}
+.tile-number {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  background: #fff;
+  color: #493f43;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 10px;
+  opacity: 0;
+}
+.collage-tile:hover .tile-number,
+.collage-tile.is-selected .tile-number {
+  opacity: 1;
+}
+.collage-divider {
+  position: absolute;
+  z-index: 2;
+  touch-action: none;
+}
+.collage-divider.x {
+  width: 12px;
+  transform: translateX(-50%);
+  cursor: col-resize;
+}
+.collage-divider.y {
+  height: 12px;
+  transform: translateY(-50%);
+  cursor: row-resize;
+}
+.collage-divider::after {
+  content: "";
+  position: absolute;
+  background: #a34161;
+  opacity: 0;
+  border-radius: 2px;
+  transition: opacity 120ms ease-out;
+}
+.collage-divider.x::after {
+  width: 3px;
+  left: calc(50% - 1.5px);
+  height: 100%;
+}
+.collage-divider.y::after {
+  height: 3px;
+  top: calc(50% - 1.5px);
+  width: 100%;
+}
+.collage-divider:hover::after,
+.collage-divider:focus-visible::after {
+  opacity: 1;
+}
+.collage-canvas-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 22px;
+  font-size: 10px;
+  color: #79636b;
+  font-variant-numeric: tabular-nums;
+}
+.collage-layouts {
+  padding: 8px 22px 20px;
+}
+.collage-layouts > div {
+  display: flex;
+  gap: 12px;
+  margin-top: 10px;
+}
+.collage-layouts button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 1;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #fffefd;
+  text-align: left;
+  color: #5a4b50;
+  font-size: 11px;
+}
+.collage-layouts button:hover:enabled {
+  border-color: #a34161;
+}
+.collage-layouts button:disabled {
+  opacity: 0.45;
+}
+.collage-layouts svg {
+  width: 58px;
+  height: 38px;
+  background: #f8ece8;
+  flex-shrink: 0;
+}
+.collage-layouts rect {
+  fill: #be8997;
+}
+.collage-layouts p {
+  font-size: 10px;
+  line-height: 1.5;
+  color: #79636b;
+  margin-bottom: 0;
+}
+.collage-inspector fieldset {
+  margin: 0 0 24px;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.collage-inspector legend {
+  font-size: 13px;
+  font-weight: 800;
+  padding: 0;
+  margin-bottom: 14px;
+}
+.collage-inspector label {
+  display: block;
+  font-size: 11px;
+  margin-bottom: 14px;
+}
+.collage-inspector label output {
+  float: right;
+  font-variant-numeric: tabular-nums;
+}
+.collage-inspector select,
+.collage-inspector input[type="number"] {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 7px 6px;
+  margin-top: 6px;
+  background: #fffefd;
+  color: #493f43;
+  font: inherit;
+  min-height: 32px;
+}
+.collage-inspector input[type="range"] {
+  display: block;
+  width: 100%;
+  margin: 8px 0 0;
+}
+.collage-dimensions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.collage-color {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+}
+.collage-color input {
+  margin-left: auto;
+  width: 30px;
+  height: 26px;
+  border: 1px solid var(--border);
+  padding: 1px;
+  border-radius: 4px;
+}
+.collage-color button {
+  border: 0;
+  background: none;
+  color: #853d52;
+  padding: 0;
+  font-size: 10px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.selected-image-name {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: 0 0 14px;
+  color: #79636b;
+}
+.collage-mode {
+  display: flex;
+  gap: 4px;
+  background: #f8ece8;
+  padding: 3px;
+  border-radius: 7px;
+}
+.collage-mode button {
+  flex: 1;
+  border: 0;
+  border-radius: 5px;
+  padding: 6px 2px;
+  background: transparent;
+  font-size: 10px;
+  color: #715b64;
+}
+.collage-mode button[aria-pressed="true"] {
+  background: #fff;
+  color: #853d52;
+}
+.collage-image-actions {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+.collage-empty {
+  max-width: 360px;
+  text-align: center;
+}
+.collage-empty > svg {
+  color: #a05b71;
+}
+.collage-empty h2 {
+  font-size: 23px;
+  letter-spacing: -0.025em;
+  line-height: 1.25;
+  margin: 20px 0 10px;
+}
+.collage-empty p {
+  color: #79636b;
+  font-size: 13px;
+  line-height: 1.7;
+  margin-bottom: 22px;
+}
+.collage-empty > span {
+  display: block;
+  color: #79636b;
+  font-size: 11px;
+  margin-top: 12px;
+}
+.collage-drop-overlay {
+  position: absolute;
+  inset: 12px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  border: 2px dashed #a34161;
+  border-radius: 12px;
+  background: #fce7ecf5;
+  pointer-events: none;
+}
+@media (max-width: 1050px) {
+  .collage-body {
+    grid-template-columns: 160px minmax(0, 1fr) 205px;
+  }
+  .collage-library,
+  .collage-inspector {
+    padding: 16px 12px;
+  }
+  .collage-stage {
+    padding: 20px;
+  }
+  .collage-layouts button {
+    flex-direction: column;
+    gap: 4px;
+  }
+  .collage-canvas-footer {
+    flex-wrap: wrap;
+  }
+  .collage-toolbar {
+    padding: 16px 20px;
+  }
+}
+@media (max-width: 750px) {
+  .collage-body {
+    grid-template-columns: 140px minmax(0, 1fr);
+  }
+  .collage-inspector {
+    grid-column: 1/-1;
+    border-top: 1px solid var(--border);
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    overflow: visible;
+  }
+  .collage-body {
+    overflow: auto;
+  }
+  .collage-library,
+  .collage-workspace {
+    overflow: visible;
+  }
+  .collage-toolbar p {
+    display: none;
+  }
+  .collage-toolbar h1 {
+    font-size: 18px;
+  }
+  .collage-stage {
+    min-height: 300px;
+  }
+  .collage-sheet {
+    width: 100%;
+  }
+  .collage-layouts {
+    padding: 8px 12px 16px;
+  }
+  .collage-toolbar {
+    gap: 5px;
+    padding: 14px;
+  }
+  .app-mode-switch {
+    left: 8px;
+  }
+  .titlebar .brand {
+    margin-left: auto;
+    margin-right: 16px;
+  }
+  .titlebar-sprinkles {
+    display: none;
+  }
+}

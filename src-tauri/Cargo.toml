@@ -31,3 +31,7 @@ libc = "0.2"
 directories = "6"
 hmac = "0.12"
 sha2 = "0.10"
+
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff", "ico"] }
+arboard = "3"

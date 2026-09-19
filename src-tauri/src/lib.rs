@@ -1,3 +1,4 @@
+mod collage;
 use filetime::FileTime;
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use filetime::set_file_times;
@@ -2080,6 +2081,10 @@ pub fn run() {
             let _ = window.emit("native-source-drop", NativeSourceDrop { token });
         })
         .invoke_handler(tauri::generate_handler![
+            collage::collage_pick,
+            collage::collage_drop,
+            collage::collage_clipboard,
+            collage::collage_save,
             choose_source,
             accept_source_drop,
             choose_destination,
