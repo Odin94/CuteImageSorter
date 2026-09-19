@@ -34,15 +34,11 @@ import { toast, Toaster } from "sonner";
 
 import { CollageEditor } from "@/components/CollageEditor";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
   directionsForCount,
@@ -777,28 +773,23 @@ function SetupView({
                   })
                 }
               />
-              <Button
+              <IconButton
                 variant="outline"
-                size="icon"
+                tooltip="Browse"
                 aria-label={`Browse for ${target.label}`}
                 onClick={() => onChooseTarget(target.id)}
               >
                 <FolderOpen />
-              </Button>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Remove ${target.label}`}
-                    disabled={targets.length === 1}
-                    onClick={() => onRemoveTarget(target.id)}
-                  >
-                    <Trash2 />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Remove destination</TooltipContent>
-              </Tooltip>
+              </IconButton>
+              <IconButton
+                variant="ghost"
+                tooltip="Remove"
+                aria-label={`Remove ${target.label}`}
+                disabled={targets.length === 1}
+                onClick={() => onRemoveTarget(target.id)}
+              >
+                <Trash2 />
+              </IconButton>
             </div>
           ))}
         </div>

@@ -24,6 +24,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import {
   maximumGap,
   MAX_IMAGES,
@@ -638,26 +639,24 @@ export function CollageEditor({ active }: { active: boolean }) {
           <p>Bring your favorite moments together.</p>
         </div>
         <div className="collage-actions">
-          <Button
+          <IconButton
             variant="ghost"
-            size="icon"
-            title="Undo (⌘/Ctrl Z)"
+            tooltip="Undo"
             aria-label="Undo"
             disabled={busy || !historyState.undo}
             onClick={() => travel("undo")}
           >
             <Undo2 />
-          </Button>
-          <Button
+          </IconButton>
+          <IconButton
             variant="ghost"
-            size="icon"
-            title="Redo (⌘/Ctrl Shift Z)"
+            tooltip="Redo"
             aria-label="Redo"
             disabled={busy || !historyState.redo}
             onClick={() => travel("redo")}
           >
             <Redo2 />
-          </Button>
+          </IconButton>
           <Button
             disabled={busy || !doc.images.length}
             onClick={() => void exportImage()}
@@ -1155,9 +1154,9 @@ export function CollageEditor({ active }: { active: boolean }) {
                   </button>
                 </div>
                 <div className="collage-image-actions">
-                  <Button
+                  <IconButton
                     variant="ghost"
-                    size="icon"
+                    tooltip="Earlier"
                     aria-label="Move image earlier"
                     disabled={busy || doc.images[0].id === selected}
                     onClick={() => {
@@ -1168,10 +1167,10 @@ export function CollageEditor({ active }: { active: boolean }) {
                     }}
                   >
                     <ArrowLeft />
-                  </Button>
-                  <Button
+                  </IconButton>
+                  <IconButton
                     variant="ghost"
-                    size="icon"
+                    tooltip="Later"
                     aria-label="Move image later"
                     disabled={
                       busy || doc.images[doc.images.length - 1]?.id === selected
@@ -1184,25 +1183,27 @@ export function CollageEditor({ active }: { active: boolean }) {
                     }}
                   >
                     <ArrowRight />
-                  </Button>
-                  <Button
+                  </IconButton>
+                  <IconButton
                     variant="ghost"
-                    size="icon"
+                    tooltip="Reset"
+                    disabled={busy}
                     aria-label="Reset crop"
                     onClick={() =>
                       patchImage({ zoom: 1, panX: 50, panY: 50, fit: "cover" })
                     }
                   >
                     <RotateCcw />
-                  </Button>
-                  <Button
+                  </IconButton>
+                  <IconButton
                     variant="ghost"
-                    size="icon"
+                    tooltip="Remove"
+                    disabled={busy}
                     aria-label="Remove image"
                     onClick={remove}
                   >
                     <Trash2 />
-                  </Button>
+                  </IconButton>
                 </div>
               </>
             ) : (
