@@ -118,6 +118,7 @@ export function CollageEditor({ active }: { active: boolean }) {
   const undo = useRef<Document[]>([]);
   const redo = useRef<Document[]>([]);
   const rangeStart = useRef<Document | null>(null);
+  const rangePointer = useRef<number | null>(null);
   const [revision, setRevision] = useState(0);
   const [historyState, setHistoryState] = useState({
     undo: false,
@@ -366,7 +367,8 @@ export function CollageEditor({ active }: { active: boolean }) {
       cleanups.forEach((fn) => fn());
     };
   }, [active, recursive, run, addNative]);
-  const finishRange = () => {
+  const finishRange = useCallback(() => {
+    rangePointer.current = null;
     const before = rangeStart.current;
     rangeStart.current = null;
     if (before && before !== docRef.current) {
@@ -375,14 +377,35 @@ export function CollageEditor({ active }: { active: boolean }) {
       setHistoryState({ undo: true, redo: false });
       setRevision((value) => value + 1);
     }
-  };
+  }, []);
+  useEffect(() => {
+    const finishPointerRange = (event: globalThis.PointerEvent) => {
+      if (event.pointerId === rangePointer.current) finishRange();
+    };
+    const finishReleasedRange = (event: globalThis.PointerEvent) => {
+      if ((event.buttons & 1) === 0) finishPointerRange(event);
+    };
+    // Observe release at the window so an off-track release still closes the
+    // undo transaction. Leave pointer capture to the native range control:
+    // capturing on the input steals WebKit's internal thumb drag.
+    window.addEventListener("pointerup", finishPointerRange);
+    window.addEventListener("pointercancel", finishPointerRange);
+    window.addEventListener("pointermove", finishReleasedRange);
+    window.addEventListener("blur", finishRange);
+    return () => {
+      window.removeEventListener("pointerup", finishPointerRange);
+      window.removeEventListener("pointercancel", finishPointerRange);
+      window.removeEventListener("pointermove", finishReleasedRange);
+      window.removeEventListener("blur", finishRange);
+    };
+  }, [finishRange]);
   const rangeProps = {
     onPointerDown: (event: PointerEvent<HTMLInputElement>) => {
+      if (event.button !== 0 || !event.isPrimary || busyRef.current) return;
+      finishRange();
       rangeStart.current = docRef.current;
-      event.currentTarget.setPointerCapture(event.pointerId);
+      rangePointer.current = event.pointerId;
     },
-    onPointerUp: finishRange,
-    onPointerCancel: finishRange,
     onBlur: finishRange,
   };
   const selectedImage = doc.images.find((image) => image.id === selected);

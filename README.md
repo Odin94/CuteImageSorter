@@ -47,6 +47,13 @@ Run the full verification suite with:
 pnpm check
 ```
 
+Run the collage slider regression checks in WebKit (the macOS webview engine) and Chromium with:
+
+```bash
+pnpm exec playwright install chromium webkit
+pnpm test:browser
+```
+
 Build a distributable desktop app with:
 
 ```bash
