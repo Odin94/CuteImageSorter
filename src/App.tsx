@@ -33,6 +33,7 @@ import {
 import { toast, Toaster } from "sonner";
 
 import { CollageEditor } from "@/components/CollageEditor";
+import { SorterImagePreview } from "@/components/SorterImagePreview";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
@@ -1039,11 +1040,9 @@ function MediaPreview({
             </span>
           </div>
         ) : file.kind === "image" ? (
-          <img
+          <SorterImagePreview
             src={source}
             alt={file.name}
-            draggable={false}
-            decoding="async"
             onError={() => setFailed(true)}
           />
         ) : file.kind === "video" ? (

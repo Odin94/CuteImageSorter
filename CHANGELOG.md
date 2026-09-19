@@ -8,6 +8,7 @@
 - Added subtle dragged-image and hover-target indicators when swapping collage images.
 
 - Fixed collage sliders getting stuck to the pointer or failing to follow a drag on macOS, while preserving one undo step per drag.
+- Images in the sorter now fit fully in the preview by default, with zoom in/out, a Fit reset, and scrolling to inspect enlarged images. Each new image starts fitted.
 
 - Added a collage studio with folder, file, drop and clipboard import, suggested layouts, even adjustable margins, draggable frame resizing and image swapping, crop and zoom controls, undo/redo, and PNG/JPEG export.
 
