@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Combined collage file and folder import under **Add images**, with mixed file/folder selection on macOS.
+- Automatically reduced desktop PNG/JPEG export sizes with lossless compression optimization.
+
 - Added subtle dragged-image and hover-target indicators when swapping collage images.
 
 - Fixed collage sliders getting stuck to the pointer or failing to follow a drag on macOS, while preserving one undo step per drag.

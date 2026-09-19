@@ -144,6 +144,7 @@ export function CollageEditor({ active }: { active: boolean }) {
   const sheet = useRef<HTMLDivElement>(null);
   const filesInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
+  const importPicker = useRef<HTMLDialogElement>(null);
   const setDocument = useCallback((next: Document, history = true) => {
     next = {
       ...next,
@@ -269,7 +270,15 @@ export function CollageEditor({ active }: { active: boolean }) {
       ),
     [addBlobs, run],
   );
-  const pick = (folder: boolean) => {
+  const pick = (folder?: boolean) => {
+    if (
+      folder === undefined &&
+      !(isTauri() && /Mac/.test(navigator.platform))
+    ) {
+      importPicker.current?.showModal();
+      return;
+    }
+    importPicker.current?.close();
     if (!isTauri()) {
       (folder ? folderInput : filesInput).current?.click();
       return;
@@ -277,7 +286,7 @@ export function CollageEditor({ active }: { active: boolean }) {
     void run(async () =>
       addNative(
         await invoke<ImportResult | null>("collage_pick", {
-          folder,
+          folder: folder ?? false,
           recursive,
           capacity: MAX_IMAGES - docRef.current.images.length,
         }),
@@ -633,6 +642,27 @@ export function CollageEditor({ active }: { active: boolean }) {
           event.target.value = "";
         }}
       />
+      <dialog
+        ref={importPicker}
+        className="collage-import-picker"
+        aria-labelledby="import-title"
+      >
+        <h2 id="import-title">Add images</h2>
+        <p>Select individual images or all images in a folder.</p>
+        <div>
+          <Button onClick={() => pick(false)}>
+            <ImagePlus />
+            Select images
+          </Button>
+          <Button variant="secondary" onClick={() => pick(true)}>
+            <FolderOpen />
+            Select folder
+          </Button>
+          <Button variant="ghost" onClick={() => importPicker.current?.close()}>
+            Cancel
+          </Button>
+        </div>
+      </dialog>
       <header className="collage-toolbar">
         <div>
           <h1>Collage studio</h1>
@@ -678,18 +708,10 @@ export function CollageEditor({ active }: { active: boolean }) {
             <Button
               variant="secondary"
               disabled={busy || doc.images.length >= MAX_IMAGES}
-              onClick={() => pick(false)}
+              onClick={() => pick()}
             >
               <ImagePlus />
               Add images
-            </Button>
-            <Button
-              variant="outline"
-              disabled={busy || doc.images.length >= MAX_IMAGES}
-              onClick={() => pick(true)}
-            >
-              <FolderOpen />
-              Load folder
             </Button>
             <Button
               variant="ghost"
@@ -709,7 +731,8 @@ export function CollageEditor({ active }: { active: boolean }) {
             Include subfolders
           </label>
           <p className="collage-hint">
-            Drop images anywhere or paste with ⌘/Ctrl V.
+            Select images or folders. You can also drop them here or paste with
+            ⌘/Ctrl V.
           </p>
           <div className="collage-thumbnails">
             {doc.images.map((image, index) => (
@@ -921,9 +944,9 @@ export function CollageEditor({ active }: { active: boolean }) {
                   Add a few images. We’ll arrange them with even white margins,
                   ready for your finishing touches.
                 </p>
-                <Button disabled={busy} onClick={() => pick(false)}>
+                <Button disabled={busy} onClick={() => pick()}>
                   <ImagePlus />
-                  Choose images
+                  Add images
                 </Button>
                 <span>Or drop a folder here</span>
               </div>
