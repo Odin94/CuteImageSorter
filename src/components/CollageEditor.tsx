@@ -50,7 +50,7 @@ type Document = {
   background: string;
 };
 type ImportResult = {
-  images: { name: string; data: string }[];
+  images: { name: string; data: string; width: number; height: number }[];
   warnings: string[];
 };
 const initial: Document = {
@@ -65,16 +65,10 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 function fromBase64(data: string): Blob {
-  const bytes = Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
+  const decoded = atob(data);
+  const bytes = new Uint8Array(decoded.length);
+  for (let i = 0; i < decoded.length; i++) bytes[i] = decoded.charCodeAt(i);
   return new Blob([bytes], { type: "image/png" });
-}
-function toBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result).split(",")[1]);
-    reader.onerror = () => reject(new Error("Could not prepare export."));
-    reader.readAsDataURL(blob);
-  });
 }
 function DimensionInput({
   value,
@@ -194,7 +188,11 @@ export function CollageEditor({ active }: { active: boolean }) {
   }, []);
   const addBlobs = useCallback(
     async (
-      entries: { blob: Blob; name: string }[],
+      entries: {
+        blob: Blob;
+        name: string;
+        normalizedSize?: { width: number; height: number };
+      }[],
       warnings: string[] = [],
     ) => {
       const current = docRef.current;
@@ -211,7 +209,11 @@ export function CollageEditor({ active }: { active: boolean }) {
         try {
           if (entry.blob.size > 100 * 1024 * 1024)
             throw new Error("File exceeds 100 MB");
-          const image = await normalizeImage(entry.blob, entry.name);
+          const image = await normalizeImage(
+            entry.blob,
+            entry.name,
+            entry.normalizedSize,
+          );
           if (pixels + image.width * image.height > MAX_TOTAL_PIXELS) {
             URL.revokeObjectURL(image.url);
             warnings.push(
@@ -257,6 +259,7 @@ export function CollageEditor({ active }: { active: boolean }) {
           result.images.map((image) => ({
             name: image.name,
             blob: fromBase64(image.data),
+            normalizedSize: { width: image.width, height: image.height },
           })),
           result.warnings,
         );
@@ -566,12 +569,7 @@ export function CollageEditor({ active }: { active: boolean }) {
         format,
       );
       if (isTauri()) {
-        if (
-          await invoke<boolean>("collage_save", {
-            data: await toBase64(blob),
-            format,
-          })
-        )
+        if (await invoke<boolean>("collage_save", await blob.arrayBuffer()))
           toast.success("Collage saved");
       } else {
         const url = URL.createObjectURL(blob);

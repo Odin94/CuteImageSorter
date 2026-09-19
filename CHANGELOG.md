@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Sped up collage imports by reusing prepared images, and exports with parallel image decoding, binary desktop transfers, and faster lossless PNG compression.
+
 - Combined collage file and folder import under **Add images**, with mixed file/folder selection on macOS.
 - Automatically reduced desktop PNG/JPEG export sizes with lossless compression optimization.
 

@@ -247,25 +247,72 @@ export async function loadImage(url: string): Promise<HTMLImageElement> {
   await image.decode();
   return image;
 }
+function importedImage(
+  url: string,
+  name: string,
+  width: number,
+  height: number,
+): CollageImage {
+  return {
+    id: crypto.randomUUID(),
+    name,
+    url,
+    width,
+    height,
+    fit: "cover",
+    zoom: 1,
+    panX: 50,
+    panY: 50,
+  };
+}
 export async function normalizeImage(
   file: Blob,
   name: string,
+  normalizedSize?: { width: number; height: number },
 ): Promise<CollageImage> {
+  // Native imports are already oriented, bounded and converted to a static PNG.
+  // Reuse those bytes instead of decoding and PNG-encoding them a second time.
+  if (normalizedSize) {
+    const { width, height } = normalizedSize;
+    if (
+      !Number.isInteger(width) ||
+      !Number.isInteger(height) ||
+      width < 1 ||
+      height < 1 ||
+      width > MAX_IMAGE_EDGE ||
+      height > MAX_IMAGE_EDGE
+    )
+      throw new Error("Invalid normalized image dimensions.");
+    return importedImage(URL.createObjectURL(file), name, width, height);
+  }
   const source = URL.createObjectURL(file);
+  let retained = false;
+  let canvas: HTMLCanvasElement | undefined;
   try {
     const image = await loadImage(source);
     const scale = Math.min(
       1,
       MAX_IMAGE_EDGE / Math.max(image.naturalWidth, image.naturalHeight),
     );
-    const canvas = document.createElement("canvas");
+    // JPEG is static. Keep animation-capable formats on the canvas path to freeze
+    // their first frame, as before. Large JPEGs still receive the working-size cap.
+    if (scale === 1 && file.type === "image/jpeg") {
+      retained = true;
+      return importedImage(
+        source,
+        name,
+        image.naturalWidth,
+        image.naturalHeight,
+      );
+    }
+    canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
     canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("Image processing is unavailable.");
     ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
     const blob = await new Promise<Blob>((resolve, reject) =>
-      canvas.toBlob(
+      canvas!.toBlob(
         (value) =>
           value
             ? resolve(value)
@@ -273,19 +320,18 @@ export async function normalizeImage(
         "image/png",
       ),
     );
-    return {
-      id: crypto.randomUUID(),
+    return importedImage(
+      URL.createObjectURL(blob),
       name,
-      url: URL.createObjectURL(blob),
-      width: canvas.width,
-      height: canvas.height,
-      fit: "cover",
-      zoom: 1,
-      panX: 50,
-      panY: 50,
-    };
+      canvas.width,
+      canvas.height,
+    );
   } finally {
-    URL.revokeObjectURL(source);
+    if (!retained) URL.revokeObjectURL(source);
+    if (canvas) {
+      canvas.width = 0;
+      canvas.height = 0;
+    }
   }
 }
 export async function renderCollage(
@@ -304,28 +350,40 @@ export async function renderCollage(
   if (!ctx) throw new Error("Export is unavailable.");
   ctx.fillStyle = background;
   ctx.fillRect(0, 0, width, height);
-  for (const cell of layoutGeometry(layout, width, height, gap).cells) {
-    const source = images[cell.slot];
-    const image = await loadImage(source.url);
-    const rect = imageRect(source, cell);
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(cell.x, cell.y, cell.width, cell.height);
-    ctx.clip();
-    ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(image, rect.x, rect.y, rect.width, rect.height);
-    ctx.restore();
+  const cells = layoutGeometry(layout, width, height, gap).cells;
+  try {
+    for (let start = 0; start < cells.length; start += 3) {
+      const batch = cells.slice(start, start + 3);
+      const decoded = await Promise.all(
+        batch.map((cell) => loadImage(images[cell.slot].url)),
+      );
+      for (const [index, cell] of batch.entries()) {
+        const source = images[cell.slot];
+        const image = decoded[index];
+        const rect = imageRect(source, cell);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(cell.x, cell.y, cell.width, cell.height);
+        ctx.clip();
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(image, rect.x, rect.y, rect.width, rect.height);
+        ctx.restore();
+      }
+    }
+    return await new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob(
+        (blob) =>
+          blob
+            ? resolve(blob)
+            : reject(
+                new Error("Could not export this collage. Try a smaller size."),
+              ),
+        `image/${format}`,
+        0.95,
+      ),
+    );
+  } finally {
+    canvas.width = 0;
+    canvas.height = 0;
   }
-  return new Promise((resolve, reject) =>
-    canvas.toBlob(
-      (blob) =>
-        blob
-          ? resolve(blob)
-          : reject(
-              new Error("Could not export this collage. Try a smaller size."),
-            ),
-      `image/${format}`,
-      0.95,
-    ),
-  );
 }

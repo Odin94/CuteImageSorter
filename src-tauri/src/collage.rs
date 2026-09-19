@@ -13,6 +13,8 @@ const EXTENSIONS: &[&str] = &[
 pub struct ImportedImage {
     name: String,
     data: String,
+    width: u32,
+    height: u32,
 }
 #[derive(Default, Serialize)]
 pub struct ImportResult {
@@ -31,6 +33,8 @@ fn encode(image: image::DynamicImage, name: String) -> Result<ImportedImage, Str
         .map_err(|e| e.to_string())?;
     Ok(ImportedImage {
         name,
+        width: image.width(),
+        height: image.height(),
         data: STANDARD.encode(bytes.into_inner()),
     })
 }
@@ -265,8 +269,9 @@ fn optimize_export(bytes: Vec<u8>, format: ImageFormat) -> Vec<u8> {
     let mut best = bytes;
     match format {
         ImageFormat::Png => {
-            let mut options = oxipng::Options::from_preset(3);
-            options.timeout = Some(std::time::Duration::from_secs(5));
+            // Interactive saves favor fast lossless compression over exhaustive filter trials.
+            let mut options = oxipng::Options::from_preset(0);
+            options.timeout = Some(std::time::Duration::from_millis(500));
             options.strip = oxipng::StripChunks::None;
             options.optimize_alpha = false;
             if let Ok(candidate) = oxipng::optimize_from_memory(&best, &options)
@@ -295,32 +300,43 @@ fn optimize_export(bytes: Vec<u8>, format: ImageFormat) -> Vec<u8> {
     best
 }
 
+// Validate the raw payload before opening a dialog or running a codec optimizer.
+fn export_format(bytes: &[u8]) -> Result<ImageFormat, String> {
+    if bytes.len() > 150 * 1024 * 1024 {
+        return Err("Export is too large. Try smaller dimensions.".into());
+    }
+    let format = image::guess_format(bytes).map_err(|e| e.to_string())?;
+    if !matches!(format, ImageFormat::Png | ImageFormat::Jpeg) {
+        return Err("Unsupported export format".into());
+    }
+    let (width, height) = ImageReader::with_format(Cursor::new(bytes), format)
+        .into_dimensions()
+        .map_err(|e| e.to_string())?;
+    if width == 0 || height == 0 || width > 6000 || height > 6000 {
+        return Err("Export dimensions must be between 1 and 6000 pixels per edge.".into());
+    }
+    Ok(format)
+}
+
 #[tauri::command]
-pub async fn collage_save(app: AppHandle, data: String, format: String) -> Result<bool, String> {
+pub async fn collage_save(
+    app: AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<bool, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("Expected an image payload".into());
+    };
+    if bytes.len() > 150 * 1024 * 1024 {
+        return Err("Export is too large. Try smaller dimensions.".into());
+    }
+    let bytes = bytes.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let ext = match format.as_str() {
-            "png" => "png",
-            "jpeg" => "jpg",
-            _ => return Err("Unsupported export format".into()),
-        };
-        if data.len() > 200 * 1024 * 1024 {
-            return Err("Export is too large. Try smaller dimensions.".into());
-        }
-        let bytes = STANDARD.decode(data).map_err(|e| e.to_string())?;
-        let expected = if ext == "png" {
-            ImageFormat::Png
+        let expected = export_format(&bytes)?;
+        let ext = if expected == ImageFormat::Png {
+            "png"
         } else {
-            ImageFormat::Jpeg
+            "jpg"
         };
-        if image::guess_format(&bytes).map_err(|e| e.to_string())? != expected {
-            return Err("Invalid export image".into());
-        }
-        let (width, height) = ImageReader::with_format(Cursor::new(&bytes), expected)
-            .into_dimensions()
-            .map_err(|e| e.to_string())?;
-        if width == 0 || height == 0 || width > 6000 || height > 6000 {
-            return Err("Export dimensions must be between 1 and 6000 pixels per edge.".into());
-        }
         let Some(path) = app
             .dialog()
             .file()
@@ -410,6 +426,79 @@ mod tests {
         for format in [ImageFormat::Png, ImageFormat::Jpeg] {
             let bytes = b"invalid image".to_vec();
             assert_eq!(optimize_export(bytes.clone(), format), bytes);
+        }
+    }
+
+    #[test]
+    fn normalized_import_reports_dimensions_and_preserves_alpha() {
+        let original = image::RgbaImage::from_fn(31, 17, |x, y| {
+            image::Rgba([x as u8, y as u8, 123, [0, 128, 255][x as usize % 3]])
+        });
+        let imported = encode(original.clone().into(), "alpha.png".into()).unwrap();
+        assert_eq!((imported.width, imported.height), (31, 17));
+        let decoded = image::load_from_memory(&STANDARD.decode(imported.data).unwrap()).unwrap();
+        assert_eq!(decoded.to_rgba8(), original);
+        let large = encode(image::RgbImage::new(3000, 30).into(), "large.png".into()).unwrap();
+        assert_eq!((large.width, large.height), (2400, 24));
+    }
+
+    #[test]
+    fn binary_exports_validate_format_and_dimensions() {
+        for format in [ImageFormat::Png, ImageFormat::Jpeg] {
+            let mut bytes = Cursor::new(Vec::new());
+            image::RgbImage::new(60, 30)
+                .write_to(&mut bytes, format)
+                .unwrap();
+            assert_eq!(export_format(bytes.get_ref()).unwrap(), format);
+        }
+        let mut bytes = Cursor::new(Vec::new());
+        image::RgbImage::new(6001, 1)
+            .write_to(&mut bytes, ImageFormat::Png)
+            .unwrap();
+        assert!(export_format(bytes.get_ref()).is_err());
+        bytes = Cursor::new(Vec::new());
+        image::RgbImage::new(10, 10)
+            .write_to(&mut bytes, ImageFormat::Bmp)
+            .unwrap();
+        assert!(export_format(bytes.get_ref()).is_err());
+        assert!(export_format(b"invalid").is_err());
+    }
+
+    // Run with --release --ignored --nocapture; timings are diagnostic, not CI assertions.
+    #[test]
+    #[ignore]
+    fn benchmark_png_export() {
+        for (width, height) in [(2400, 1800), (4800, 3600)] {
+            let mut random = 42u32;
+            let image = image::RgbImage::from_fn(width, height, |x, y| {
+                random ^= random << 13;
+                random ^= random >> 17;
+                random ^= random << 5;
+                let noise = (random % 32) as u8;
+                image::Rgb([
+                    (x / 16) as u8 ^ noise,
+                    (y / 16) as u8 ^ noise,
+                    ((x + y) / 32) as u8 ^ noise,
+                ])
+            });
+            let mut bytes = Cursor::new(Vec::new());
+            image.write_to(&mut bytes, ImageFormat::Png).unwrap();
+            let bytes = bytes.into_inner();
+            let mut previous = oxipng::Options::from_preset(3);
+            previous.timeout = Some(std::time::Duration::from_secs(5));
+            let start = std::time::Instant::now();
+            let old = oxipng::optimize_from_memory(&bytes, &previous).unwrap();
+            let old_time = start.elapsed();
+            let start = std::time::Instant::now();
+            let new = optimize_export(bytes.clone(), ImageFormat::Png);
+            let new_time = start.elapsed();
+            assert_eq!(image::load_from_memory(&new).unwrap().to_rgb8(), image);
+            println!(
+                "{width}x{height}: previous {old_time:?} / {} bytes; fast {new_time:?} / {} bytes; input {} bytes",
+                old.len(),
+                new.len(),
+                bytes.len()
+            );
         }
     }
 
