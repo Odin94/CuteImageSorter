@@ -32,16 +32,14 @@ import {
 } from "react";
 import { toast, Toaster } from "sonner";
 
+import { CollageEditor } from "@/components/CollageEditor";
+import { SorterImagePreview } from "@/components/SorterImagePreview";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
   directionsForCount,
@@ -52,7 +50,7 @@ import {
 } from "@/lib/sorting";
 
 type MediaKind = "image" | "video" | "audio";
-type AppView = "setup" | "sorting";
+type AppView = "setup" | "sorting" | "collage";
 
 type MediaFile = {
   id: string;
@@ -567,6 +565,22 @@ function App() {
           toastOptions={{ className: "cute-toast" }}
         />
         <header className="titlebar" data-tauri-drag-region>
+          <nav className="app-mode-switch" aria-label="Workspace">
+            <button
+              aria-pressed={view !== "collage"}
+              disabled={pendingMoves > 0 || isScanning}
+              onClick={() => setView(sessionId === null ? "setup" : "sorting")}
+            >
+              Sort
+            </button>
+            <button
+              aria-pressed={view === "collage"}
+              disabled={pendingMoves > 0 || isScanning}
+              onClick={() => setView("collage")}
+            >
+              Collage
+            </button>
+          </nav>
           <div className="brand" data-tauri-drag-region>
             <div className="brand-mark" aria-hidden="true">
               <span>•ᴗ•</span>
@@ -580,7 +594,8 @@ function App() {
           </div>
         </header>
 
-        {view === "setup" ? (
+        <CollageEditor active={view === "collage"} />
+        {view === "collage" ? null : view === "setup" ? (
           <SetupView
             sourceSelection={sourceSelection}
             sourceDragActive={sourceDragActive}
@@ -759,28 +774,23 @@ function SetupView({
                   })
                 }
               />
-              <Button
+              <IconButton
                 variant="outline"
-                size="icon"
+                tooltip="Browse"
                 aria-label={`Browse for ${target.label}`}
                 onClick={() => onChooseTarget(target.id)}
               >
                 <FolderOpen />
-              </Button>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Remove ${target.label}`}
-                    disabled={targets.length === 1}
-                    onClick={() => onRemoveTarget(target.id)}
-                  >
-                    <Trash2 />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Remove destination</TooltipContent>
-              </Tooltip>
+              </IconButton>
+              <IconButton
+                variant="ghost"
+                tooltip="Remove"
+                aria-label={`Remove ${target.label}`}
+                disabled={targets.length === 1}
+                onClick={() => onRemoveTarget(target.id)}
+              >
+                <Trash2 />
+              </IconButton>
             </div>
           ))}
         </div>
@@ -1030,11 +1040,9 @@ function MediaPreview({
             </span>
           </div>
         ) : file.kind === "image" ? (
-          <img
+          <SorterImagePreview
             src={source}
             alt={file.name}
-            draggable={false}
-            decoding="async"
             onError={() => setFailed(true)}
           />
         ) : file.kind === "video" ? (
