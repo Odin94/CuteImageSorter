@@ -219,6 +219,56 @@
 .collage-tile:active {
   cursor: grabbing;
 }
+.collage-tile.is-swap-source {
+  outline-style: dashed;
+  cursor: grabbing;
+}
+.collage-tile.is-swap-source > img {
+  opacity: 0.65;
+}
+.collage-tile.is-swap-target {
+  outline: 2px solid #a34161;
+  outline-offset: 2px;
+  z-index: 1;
+}
+.collage-tile.is-swap-target::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  box-shadow: inset 0 0 0 2px #fff;
+  background: rgb(163 65 97 / 8%);
+  pointer-events: none;
+}
+.collage-tile > img {
+  transition: opacity 120ms ease-out;
+}
+.swap-indicator {
+  position: absolute;
+  z-index: 1;
+  bottom: 7px;
+  left: 7px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: calc(100% - 14px);
+  padding: 4px 6px;
+  border-radius: 5px;
+  color: #853d52;
+  background: #fffaf6;
+  font-size: 10px;
+  font-weight: 750;
+  pointer-events: none;
+}
+.swap-indicator svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+.swap-indicator span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .tile-number {
   position: absolute;
   left: 6px;

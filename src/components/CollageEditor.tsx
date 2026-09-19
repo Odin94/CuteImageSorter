@@ -3,6 +3,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   ArrowLeft,
   ArrowRight,
+  ArrowLeftRight,
+  Move,
   ClipboardPaste,
   Download,
   FolderOpen,
@@ -131,6 +133,12 @@ export function CollageEditor({ active }: { active: boolean }) {
   const [recursive, setRecursive] = useState(true);
   const [dragOver, setDragOver] = useState(false);
   const [mode, setMode] = useState<"swap" | "crop">("swap");
+  const [swapDrag, setSwapDrag] = useState<{
+    source: number;
+    target: number | null;
+  } | null>(null);
+  const cancelGesture = useRef<(() => void) | null>(null);
+  useEffect(() => () => cancelGesture.current?.(), [active]);
   const resources = useRef(new Set<string>());
   const sheet = useRef<HTMLDivElement>(null);
   const filesInput = useRef<HTMLInputElement>(null);
@@ -437,7 +445,8 @@ export function CollageEditor({ active }: { active: boolean }) {
     move: (dx: number, dy: number, e: globalThis.PointerEvent) => void,
     finish?: (e: globalThis.PointerEvent) => void,
   ) {
-    if (event.button !== 0 || busyRef.current) return;
+    if (event.button !== 0 || !event.isPrimary || busyRef.current) return;
+    cancelGesture.current?.();
     event.preventDefault();
     event.stopPropagation();
     const target = event.currentTarget;
@@ -447,6 +456,7 @@ export function CollageEditor({ active }: { active: boolean }) {
       startY = event.clientY;
     let changed = false;
     const onMove = (e: globalThis.PointerEvent) => {
+      if (e.pointerId !== event.pointerId) return;
       if (Math.hypot(e.clientX - startX, e.clientY - startY) < 3 && !changed)
         return;
       changed = true;
@@ -455,9 +465,17 @@ export function CollageEditor({ active }: { active: boolean }) {
     const cleanup = () => {
       target.removeEventListener("pointermove", onMove);
       target.removeEventListener("pointerup", onEnd);
-      target.removeEventListener("pointercancel", onCancel);
+      target.removeEventListener("pointercancel", onPointerCancel);
+      target.removeEventListener("lostpointercapture", onPointerCancel);
+      window.removeEventListener("blur", onCancel);
+      window.removeEventListener("keydown", onGestureKey);
+      cancelGesture.current = null;
+      if (target.hasPointerCapture(event.pointerId))
+        target.releasePointerCapture(event.pointerId);
+      setSwapDrag(null);
     };
     const onEnd = (e: globalThis.PointerEvent) => {
+      if (e.pointerId !== event.pointerId) return;
       cleanup();
       if (changed && docRef.current !== before) {
         undo.current = [...undo.current.slice(-29), before];
@@ -469,11 +487,40 @@ export function CollageEditor({ active }: { active: boolean }) {
     };
     const onCancel = () => {
       cleanup();
-      setDocument(before, false);
+      if (docRef.current !== before) setDocument(before, false);
     };
+    const onPointerCancel = (e: globalThis.PointerEvent) => {
+      if (e.pointerId === event.pointerId) onCancel();
+    };
+    const onGestureKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onCancel();
+      }
+    };
+    cancelGesture.current = onCancel;
     target.addEventListener("pointermove", onMove);
     target.addEventListener("pointerup", onEnd);
-    target.addEventListener("pointercancel", onCancel);
+    target.addEventListener("pointercancel", onPointerCancel);
+    target.addEventListener("lostpointercapture", onPointerCancel);
+    window.addEventListener("blur", onCancel);
+    window.addEventListener("keydown", onGestureKey);
+  }
+  function swapTargetAt(
+    event: globalThis.PointerEvent,
+    source: number,
+  ): number | null {
+    const tile = document
+      .elementFromPoint(event.clientX, event.clientY)
+      ?.closest<HTMLElement>("[data-slot]");
+    if (!tile || !sheet.current?.contains(tile)) return null;
+    const slot = Number(tile.dataset.slot);
+    return Number.isInteger(slot) &&
+      slot >= 0 &&
+      slot < docRef.current.images.length &&
+      slot !== source
+      ? slot
+      : null;
   }
   function resize(event: PointerEvent<HTMLElement>, divider: Divider) {
     const original = doc;
@@ -705,7 +752,7 @@ export function CollageEditor({ active }: { active: boolean }) {
                   return (
                     <div
                       key={cell.slot}
-                      className={`collage-tile ${selected === image.id ? "is-selected" : ""}`}
+                      className={`collage-tile ${selected === image.id ? "is-selected" : ""} ${swapDrag?.source === cell.slot ? "is-swap-source" : ""} ${swapDrag?.target === cell.slot ? "is-swap-target" : ""}`}
                       data-slot={cell.slot}
                       role="button"
                       tabIndex={busy ? -1 : 0}
@@ -731,7 +778,16 @@ export function CollageEditor({ active }: { active: boolean }) {
                         const original = doc;
                         gesture(
                           event,
-                          (dx, dy) => {
+                          (dx, dy, pointer) => {
+                            if (mode === "swap") {
+                              const target = swapTargetAt(pointer, cell.slot);
+                              setSwapDrag((current) =>
+                                current?.source === cell.slot &&
+                                current.target === target
+                                  ? current
+                                  : { source: cell.slot, target },
+                              );
+                            }
                             if (mode === "crop") {
                               const px =
                                 Math.abs(cell.width - rect.width) < 1
@@ -776,11 +832,8 @@ export function CollageEditor({ active }: { active: boolean }) {
                           },
                           (e) => {
                             if (mode === "swap") {
-                              const target = document
-                                .elementFromPoint(e.clientX, e.clientY)
-                                ?.closest<HTMLElement>("[data-slot]");
-                              if (target)
-                                swap(cell.slot, Number(target.dataset.slot));
+                              const target = swapTargetAt(e, cell.slot);
+                              if (target !== null) swap(cell.slot, target);
                             }
                           },
                         );
@@ -798,6 +851,18 @@ export function CollageEditor({ active }: { active: boolean }) {
                         }}
                       />
                       <span className="tile-number">{cell.slot + 1}</span>
+                      {swapDrag?.source === cell.slot && (
+                        <span className="swap-indicator" aria-hidden="true">
+                          <Move />
+                          <span>Moving</span>
+                        </span>
+                      )}
+                      {swapDrag?.target === cell.slot && (
+                        <span className="swap-indicator" aria-hidden="true">
+                          <ArrowLeftRight />
+                          <span>Swap here</span>
+                        </span>
+                      )}
                     </div>
                   );
                 })}

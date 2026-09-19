@@ -25,7 +25,7 @@ Switch to **Collage** to compose images without moving or modifying originals.
 
 - Add individual files, load a folder (optionally including subfolders), drop images or folders onto the desktop app, or paste an image with the Paste button or Cmd/Ctrl+V.
 - Choose **Balanced**, **Wide story**, or **Spotlight** for an automatic arrangement. Adding or removing images rearranges frames; undo restores the previous composition.
-- Drag an image onto another to swap them. Drag a shared divider to resize frames while keeping equal margins. Dividers also support arrow keys when focused.
+- Drag an image onto another to swap them. The dragged image dims, and the hovered image is marked “Swap here”; release to swap or press Escape to cancel. Drag a shared divider to resize frames while keeping equal margins. Dividers also support arrow keys when focused.
 - Select an image to fill or fit its frame, zoom, adjust its position, or switch to **Drag to crop**. Earlier/later buttons provide a keyboard-accessible way to reorder images.
 - Set the canvas dimensions, white-by-default margin color, and margin width. Export a PNG or JPEG with dimensions from 800 to 6000 pixels per edge. Crowded layouts limit the maximum margin so every image remains visible.
 - Undo/redo covers layout, crop, import, removal, and canvas changes. The collage stays available when switching to the sorter; export before closing the app.
