@@ -19,11 +19,14 @@ import {
   useCallback,
   useEffect,
   useRef,
+  useMemo,
+  useLayoutEffect,
   useState,
   type PointerEvent,
 } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { ContextMenu } from "@/components/ui/context-menu";
 import { IconButton } from "@/components/ui/icon-button";
 import {
   maximumGap,
@@ -37,18 +40,14 @@ import {
   suggestLayout,
   type CollageImage,
   type Divider,
-  type Layout,
 } from "@/lib/collage";
 import "./CollageEditor.css";
 
-type Document = {
-  images: CollageImage[];
-  layout: Layout | null;
-  width: number;
-  height: number;
-  gap: number;
-  background: string;
-};
+import {
+  CollageDocumentHistory,
+  type CollageDocument as Document,
+} from "@/lib/collage-document";
+
 type ImportResult = {
   images: { name: string; data: string; width: number; height: number }[];
   warnings: string[];
@@ -112,17 +111,19 @@ function DimensionInput({
 export function CollageEditor({ active }: { active: boolean }) {
   const [doc, setDoc] = useState<Document>(initial);
   const docRef = useRef(doc);
-  const undo = useRef<Document[]>([]);
-  const redo = useRef<Document[]>([]);
-  const rangeStart = useRef<Document | null>(null);
+  const [history] = useState(() => new CollageDocumentHistory(initial));
   const rangePointer = useRef<number | null>(null);
-  const [revision, setRevision] = useState(0);
   const [historyState, setHistoryState] = useState({
     undo: false,
     redo: false,
   });
   const [selected, setSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [operation, setOperation] = useState({
+    label: "Preparing images",
+    completed: 0,
+    total: 0,
+  });
   const busyRef = useRef(false);
   const [format, setFormat] = useState<"png" | "jpeg">("png");
   const [recursive, setRecursive] = useState(true);
@@ -134,58 +135,82 @@ export function CollageEditor({ active }: { active: boolean }) {
   } | null>(null);
   const cancelGesture = useRef<(() => void) | null>(null);
   useEffect(() => () => cancelGesture.current?.(), [active]);
-  const resources = useRef(new Set<string>());
   const sheet = useRef<HTMLDivElement>(null);
+  const stage = useRef<HTMLDivElement>(null);
+  const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
+  useLayoutEffect(() => {
+    const element = stage.current;
+    if (!element) return;
+    const observer = new ResizeObserver(([entry]) => {
+      setStageSize({
+        width: entry.contentRect.width,
+        height: entry.contentRect.height,
+      });
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   const filesInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
   const importPicker = useRef<HTMLDialogElement>(null);
-  const setDocument = useCallback((next: Document, history = true) => {
-    next = {
-      ...next,
-      gap: Math.min(next.gap, maximumGap(next.layout, next.width, next.height)),
-    };
-    if (history && !rangeStart.current) {
-      undo.current = [...undo.current.slice(-29), docRef.current];
-      redo.current = [];
-    }
-    docRef.current = next;
-    setDoc(next);
-    setHistoryState({
-      undo: undo.current.length > 0,
-      redo: redo.current.length > 0,
-    });
-    setRevision((value) => value + 1);
+  const removalUndo = useRef<{
+    id: string | number;
+    document: Document;
+  } | null>(null);
+  const dismissRemovalUndo = useCallback(() => {
+    if (removalUndo.current) toast.dismiss(removalUndo.current.id);
+    removalUndo.current = null;
   }, []);
+  const refreshDocument = useCallback(() => {
+    if (removalUndo.current && removalUndo.current.document !== history.value)
+      dismissRemovalUndo();
+    docRef.current = history.value;
+    setDoc(history.value);
+    setHistoryState({ undo: history.canUndo, redo: history.canRedo });
+  }, [history, dismissRemovalUndo]);
+  const setDocument = useCallback(
+    (next: Document, record = true) => {
+      if (record) history.commit(next);
+      else history.replace(next);
+      refreshDocument();
+    },
+    [history, refreshDocument],
+  );
+  const stopEditing = useCallback(() => {
+    cancelGesture.current?.();
+    rangePointer.current = null;
+    history.finish();
+    refreshDocument();
+  }, [history, refreshDocument]);
   const travel = useCallback(
     (direction: "undo" | "redo") => {
-      const source = direction === "undo" ? undo : redo,
-        destination = direction === "undo" ? redo : undo;
-      const next = source.current.pop();
-      if (!next) return;
-      destination.current.push(docRef.current);
-      setDocument(next, false);
+      if (busyRef.current) return;
+      stopEditing();
+      history.travel(direction);
+      refreshDocument();
     },
-    [setDocument],
+    [history, refreshDocument, stopEditing],
   );
-  useEffect(
-    () => () => {
-      resources.current.forEach((url) => URL.revokeObjectURL(url));
+  useEffect(() => () => history.dispose(), [history]);
+  const run = useCallback(
+    async (work: () => Promise<void>, label = "Preparing images") => {
+      if (busyRef.current) return;
+      stopEditing();
+      dismissRemovalUndo();
+      busyRef.current = true;
+      setBusy(true);
+      setOperation({ label, completed: 0, total: 0 });
+      try {
+        await work();
+      } catch (error) {
+        toast.error(errorText(error));
+      } finally {
+        busyRef.current = false;
+        setBusy(false);
+      }
     },
-    [],
+    [stopEditing, dismissRemovalUndo],
   );
-  const run = useCallback(async (work: () => Promise<void>) => {
-    if (busyRef.current) return;
-    busyRef.current = true;
-    setBusy(true);
-    try {
-      await work();
-    } catch (error) {
-      toast.error(errorText(error));
-    } finally {
-      busyRef.current = false;
-      setBusy(false);
-    }
-  }, []);
   const addBlobs = useCallback(
     async (
       entries: {
@@ -201,7 +226,12 @@ export function CollageEditor({ active }: { active: boolean }) {
         (sum, img) => sum + img.width * img.height,
         0,
       );
-      for (const entry of entries) {
+      setOperation({
+        label: "Importing images",
+        completed: 0,
+        total: entries.length,
+      });
+      for (const [index, entry] of entries.entries()) {
         if (current.images.length + added.length >= MAX_IMAGES) {
           warnings.push(`A collage can contain up to ${MAX_IMAGES} images.`);
           break;
@@ -222,10 +252,11 @@ export function CollageEditor({ active }: { active: boolean }) {
             break;
           }
           pixels += image.width * image.height;
-          resources.current.add(image.url);
           added.push(image);
-        } catch {
-          warnings.push(`${entry.name}: could not read this image.`);
+        } catch (error) {
+          warnings.push(`${entry.name}: ${errorText(error)}`);
+        } finally {
+          setOperation((value) => ({ ...value, completed: index + 1 }));
         }
       }
       if (added.length) {
@@ -269,9 +300,18 @@ export function CollageEditor({ active }: { active: boolean }) {
   const addFiles = useCallback(
     (files: File[]) =>
       run(() =>
-        addBlobs(files.map((file) => ({ blob: file, name: file.name }))),
+        addBlobs(
+          files
+            .filter(
+              (file) =>
+                recursive ||
+                !file.webkitRelativePath ||
+                file.webkitRelativePath.split("/").length <= 2,
+            )
+            .map((file) => ({ blob: file, name: file.name })),
+        ),
       ),
-    [addBlobs, run],
+    [addBlobs, run, recursive],
   );
   const pick = (folder?: boolean) => {
     if (
@@ -303,6 +343,10 @@ export function CollageEditor({ active }: { active: boolean }) {
           await addNative(await invoke<ImportResult>("collage_clipboard"));
           return;
         }
+        if (!navigator.clipboard?.read)
+          throw new Error(
+            "This browser cannot read clipboard images. Use Cmd/Ctrl+V to paste an image, or choose Add images.",
+          );
         const items = await navigator.clipboard.read();
         const blobs = [];
         for (const item of items) {
@@ -336,8 +380,11 @@ export function CollageEditor({ active }: { active: boolean }) {
     };
     const onKey = (event: KeyboardEvent) => {
       if (
+        !cancelGesture.current &&
         event.target instanceof HTMLElement &&
-        event.target.closest("input,textarea,select,[contenteditable=true]")
+        event.target.closest(
+          "input:not([type=range]),textarea,select,[contenteditable=true]",
+        )
       )
         return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
@@ -356,10 +403,14 @@ export function CollageEditor({ active }: { active: boolean }) {
     if (!active || !isTauri()) return;
     let disposed = false;
     const cleanups: (() => void)[] = [];
+    const retainCleanup = (cleanup: () => void) => {
+      if (disposed) cleanup();
+      else cleanups.push(cleanup);
+    };
     void Promise.all([
-      getCurrentWindow().listen<{ token: string }>(
-        "native-source-drop",
-        ({ payload }) => {
+      getCurrentWindow()
+        .listen<{ token: string }>("native-source-drop", ({ payload }) => {
+          if (disposed) return;
           setDragOver(false);
           void run(async () =>
             addNative(
@@ -370,35 +421,31 @@ export function CollageEditor({ active }: { active: boolean }) {
               }),
             ),
           );
-        },
-      ),
-      getCurrentWindow().onDragDropEvent(({ payload }) => {
-        if (payload.type === "enter") setDragOver(true);
-        if (payload.type === "leave" || payload.type === "drop")
-          setDragOver(false);
-      }),
-    ])
-      .then((list) => {
-        if (disposed) list.forEach((fn) => fn());
-        else cleanups.push(...list);
-      })
-      .catch((error) => toast.error(errorText(error)));
+        })
+        .then(retainCleanup),
+      getCurrentWindow()
+        .onDragDropEvent(({ payload }) => {
+          if (disposed) return;
+          if (payload.type === "enter") setDragOver(true);
+          if (payload.type === "leave" || payload.type === "drop")
+            setDragOver(false);
+        })
+        .then(retainCleanup),
+    ]).catch((error) => {
+      if (!disposed) toast.error(errorText(error));
+    });
     return () => {
       disposed = true;
       cleanups.forEach((fn) => fn());
     };
   }, [active, recursive, run, addNative]);
   const finishRange = useCallback(() => {
+    // A range's blur must never finish a crop or divider transaction.
+    if (rangePointer.current === null) return;
     rangePointer.current = null;
-    const before = rangeStart.current;
-    rangeStart.current = null;
-    if (before && before !== docRef.current) {
-      undo.current = [...undo.current.slice(-29), before];
-      redo.current = [];
-      setHistoryState({ undo: true, redo: false });
-      setRevision((value) => value + 1);
-    }
-  }, []);
+    history.finish();
+    refreshDocument();
+  }, [history, refreshDocument]);
   useEffect(() => {
     const finishPointerRange = (event: globalThis.PointerEvent) => {
       if (event.pointerId === rangePointer.current) finishRange();
@@ -424,18 +471,30 @@ export function CollageEditor({ active }: { active: boolean }) {
     onPointerDown: (event: PointerEvent<HTMLInputElement>) => {
       if (event.button !== 0 || !event.isPrimary || busyRef.current) return;
       finishRange();
-      rangeStart.current = docRef.current;
+      history.begin();
       rangePointer.current = event.pointerId;
     },
     onBlur: finishRange,
   };
-  const selectedImage = doc.images.find((image) => image.id === selected);
-  const geometry = layoutGeometry(doc.layout, doc.width, doc.height, doc.gap);
+  const selectedImage =
+    doc.images.find((image) => image.id === selected) ?? doc.images[0];
+  const selectedId = selectedImage?.id ?? null;
+  const geometry = useMemo(
+    () => layoutGeometry(doc.layout, doc.width, doc.height, doc.gap),
+    [doc.layout, doc.width, doc.height, doc.gap],
+  );
+  const suggestedLayouts = useMemo(
+    () =>
+      [0, 1, 2].map((variant) =>
+        suggestLayout(doc.images, doc.width, doc.height, variant),
+      ),
+    [doc.images, doc.width, doc.height],
+  );
   const patchImage = (patch: Partial<CollageImage>) =>
     setDocument({
       ...doc,
       images: doc.images.map((image) =>
-        image.id === selected ? { ...image, ...patch } : image,
+        image.id === selectedId ? { ...image, ...patch } : image,
       ),
     });
   const swap = (a: number, b: number) => {
@@ -444,27 +503,83 @@ export function CollageEditor({ active }: { active: boolean }) {
     [images[a], images[b]] = [images[b], images[a]];
     setDocument({ ...docRef.current, images });
   };
-  const remove = () => {
-    const images = doc.images.filter((image) => image.id !== selected);
+  const remove = (id = selectedId) => {
+    stopEditing();
+    const current = docRef.current;
+    const images = current.images.filter((image) => image.id !== id);
     setDocument({
-      ...doc,
+      ...current,
       images,
-      layout: suggestLayout(images, doc.width, doc.height),
+      layout: suggestLayout(images, current.width, current.height),
     });
     setSelected(images[0]?.id ?? null);
+    const removedState = history.value;
+    const toastId = toast("Image removed from collage", {
+      action: {
+        label: "Undo",
+        onClick: () => {
+          if (busyRef.current || history.value !== removedState) return;
+          travel("undo");
+          setSelected(id);
+        },
+      },
+    });
+    removalUndo.current = { id: toastId, document: removedState };
   };
+  const imageActions = (id: string, index: number) => [
+    {
+      label: "Move earlier",
+      icon: ArrowLeft,
+      disabled: busy || index === 0,
+      onSelect: () => {
+        stopEditing();
+        swap(index, index - 1);
+      },
+    },
+    {
+      label: "Move later",
+      icon: ArrowRight,
+      disabled: busy || index === doc.images.length - 1,
+      onSelect: () => {
+        stopEditing();
+        swap(index, index + 1);
+      },
+    },
+    {
+      label: "Reset crop",
+      icon: RotateCcw,
+      disabled: busy,
+      onSelect: () => {
+        stopEditing();
+        setDocument({
+          ...docRef.current,
+          images: docRef.current.images.map((image) =>
+            image.id === id
+              ? { ...image, zoom: 1, panX: 50, panY: 50, fit: "cover" }
+              : image,
+          ),
+        });
+      },
+    },
+    {
+      label: "Remove image",
+      icon: Trash2,
+      disabled: busy,
+      onSelect: () => remove(id),
+    },
+  ];
   function gesture(
     event: PointerEvent<HTMLElement>,
     move: (dx: number, dy: number, e: globalThis.PointerEvent) => void,
     finish?: (e: globalThis.PointerEvent) => void,
   ) {
     if (event.button !== 0 || !event.isPrimary || busyRef.current) return;
-    cancelGesture.current?.();
+    stopEditing();
+    history.begin();
     event.preventDefault();
     event.stopPropagation();
     const target = event.currentTarget;
     target.setPointerCapture(event.pointerId);
-    const before = docRef.current;
     const startX = event.clientX,
       startY = event.clientY;
     let changed = false;
@@ -490,17 +605,14 @@ export function CollageEditor({ active }: { active: boolean }) {
     const onEnd = (e: globalThis.PointerEvent) => {
       if (e.pointerId !== event.pointerId) return;
       cleanup();
-      if (changed && docRef.current !== before) {
-        undo.current = [...undo.current.slice(-29), before];
-        redo.current = [];
-        setHistoryState({ undo: true, redo: false });
-        setRevision((value) => value + 1);
-      }
+      history.finish();
+      refreshDocument();
       if (changed) finish?.(e);
     };
     const onCancel = () => {
       cleanup();
-      if (docRef.current !== before) setDocument(before, false);
+      history.cancel();
+      refreshDocument();
     };
     const onPointerCancel = (e: globalThis.PointerEvent) => {
       if (e.pointerId === event.pointerId) onCancel();
@@ -567,6 +679,8 @@ export function CollageEditor({ active }: { active: boolean }) {
         current.gap,
         current.background,
         format,
+        (completed, total) =>
+          setOperation({ label: "Rendering collage", completed, total }),
       );
       if (isTauri()) {
         if (await invoke<boolean>("collage_save", await blob.arrayBuffer()))
@@ -580,25 +694,12 @@ export function CollageEditor({ active }: { active: boolean }) {
         setTimeout(() => URL.revokeObjectURL(url), 1000);
         toast.success("Collage exported");
       }
-    });
-  // Keep working copies alive across undo/redo, then release copies no history can restore.
-  useEffect(() => {
-    const keep = new Set(
-      [doc, ...undo.current, ...redo.current].flatMap((entry) =>
-        entry.images.map((image) => image.url),
-      ),
-    );
-    resources.current.forEach((url) => {
-      if (!keep.has(url)) {
-        URL.revokeObjectURL(url);
-        resources.current.delete(url);
-      }
-    });
-  }, [doc, revision]);
+    }, "Exporting collage");
   return (
     <main
       className={`collage-editor ${dragOver ? "is-file-drop" : ""}`}
       hidden={!active}
+      aria-busy={busy}
       onDragOver={(event) => {
         event.preventDefault();
         setDragOver(true);
@@ -669,7 +770,13 @@ export function CollageEditor({ active }: { active: boolean }) {
         <div className="collage-actions">
           <IconButton
             variant="ghost"
-            tooltip="Undo"
+            tooltip={
+              busy
+                ? "Wait for the current operation to finish"
+                : historyState.undo
+                  ? "Undo"
+                  : "No edits to undo"
+            }
             aria-label="Undo"
             disabled={busy || !historyState.undo}
             onClick={() => travel("undo")}
@@ -678,7 +785,13 @@ export function CollageEditor({ active }: { active: boolean }) {
           </IconButton>
           <IconButton
             variant="ghost"
-            tooltip="Redo"
+            tooltip={
+              busy
+                ? "Wait for the current operation to finish"
+                : historyState.redo
+                  ? "Redo"
+                  : "No edits to redo"
+            }
             aria-label="Redo"
             disabled={busy || !historyState.redo}
             onClick={() => travel("redo")}
@@ -687,6 +800,11 @@ export function CollageEditor({ active }: { active: boolean }) {
           </IconButton>
           <Button
             disabled={busy || !doc.images.length}
+            disabledReason={
+              busy
+                ? "Wait for the current operation to finish"
+                : "Add an image before exporting"
+            }
             onClick={() => void exportImage()}
           >
             <Download />
@@ -694,6 +812,21 @@ export function CollageEditor({ active }: { active: boolean }) {
           </Button>
         </div>
       </header>
+      {busy && (
+        <div className="collage-operation" role="status">
+          <span>
+            {operation.label}
+            {operation.total > 0
+              ? ` · ${operation.completed} / ${operation.total}`
+              : "…"}
+          </span>
+          <progress
+            aria-label={operation.label}
+            max={operation.total || 1}
+            value={operation.total ? operation.completed : undefined}
+          />
+        </div>
+      )}
       <div className="collage-body">
         <aside className="collage-library">
           <div className="collage-section-heading">
@@ -706,6 +839,11 @@ export function CollageEditor({ active }: { active: boolean }) {
             <Button
               variant="secondary"
               disabled={busy || doc.images.length >= MAX_IMAGES}
+              disabledReason={
+                busy
+                  ? "Wait for the current operation to finish"
+                  : "This collage already has 24 images"
+              }
               onClick={() => pick()}
             >
               <ImagePlus />
@@ -714,6 +852,11 @@ export function CollageEditor({ active }: { active: boolean }) {
             <Button
               variant="ghost"
               disabled={busy || doc.images.length >= MAX_IMAGES}
+              disabledReason={
+                busy
+                  ? "Wait for the current operation to finish"
+                  : "This collage already has 24 images"
+              }
               onClick={() => void paste()}
             >
               <ClipboardPaste />
@@ -734,17 +877,21 @@ export function CollageEditor({ active }: { active: boolean }) {
           </p>
           <div className="collage-thumbnails">
             {doc.images.map((image, index) => (
-              <button
+              <ContextMenu
                 key={image.id}
-                className={selected === image.id ? "is-selected" : ""}
-                aria-label={`Select ${image.name}`}
-                aria-pressed={selected === image.id}
-                onClick={() => setSelected(image.id)}
+                actions={imageActions(image.id, index)}
               >
-                <img src={image.url} alt="" />
-                <span>{index + 1}</span>
-                <p title={image.name}>{image.name}</p>
-              </button>
+                <button
+                  className={selectedId === image.id ? "is-selected" : ""}
+                  aria-label={`Select ${image.name}`}
+                  aria-pressed={selectedId === image.id}
+                  onClick={() => setSelected(image.id)}
+                >
+                  <img src={image.url} alt="" loading="lazy" decoding="async" />
+                  <span>{index + 1}</span>
+                  <p title={image.name}>{image.name}</p>
+                </button>
+              </ContextMenu>
             ))}
           </div>
           <p className="collage-format-note">
@@ -755,7 +902,7 @@ export function CollageEditor({ active }: { active: boolean }) {
           </p>
         </aside>
         <section className="collage-workspace" aria-label="Collage preview">
-          <div className="collage-stage">
+          <div className="collage-stage" ref={stage}>
             {doc.images.length ? (
               <div
                 className="collage-sheet"
@@ -763,127 +910,135 @@ export function CollageEditor({ active }: { active: boolean }) {
                 style={{
                   aspectRatio: `${doc.width}/${doc.height}`,
                   background: doc.background,
-                  width: `min(100%, calc((100vh - 395px) * ${doc.width / doc.height}))`,
+                  width: Math.min(
+                    stageSize.width,
+                    (stageSize.height * doc.width) / doc.height,
+                  ),
                 }}
               >
                 {geometry.cells.map((cell) => {
                   const image = doc.images[cell.slot];
                   const rect = imageRect(image, { ...cell, x: 0, y: 0 });
                   return (
-                    <div
-                      key={cell.slot}
-                      className={`collage-tile ${selected === image.id ? "is-selected" : ""} ${swapDrag?.source === cell.slot ? "is-swap-source" : ""} ${swapDrag?.target === cell.slot ? "is-swap-target" : ""}`}
-                      data-slot={cell.slot}
-                      role="button"
-                      tabIndex={busy ? -1 : 0}
-                      aria-label={`Select ${image.name}; drag to ${mode === "swap" ? "swap images" : "adjust crop"}`}
-                      style={{
-                        left: `${(cell.x / doc.width) * 100}%`,
-                        top: `${(cell.y / doc.height) * 100}%`,
-                        width: `${(cell.width / doc.width) * 100}%`,
-                        height: `${(cell.height / doc.height) * 100}%`,
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault();
-                          setSelected(image.id);
-                        }
-                      }}
-                      onClick={() => setSelected(image.id)}
-                      onPointerDown={(event) => {
-                        setSelected(image.id);
-                        const scale =
-                          sheet.current!.getBoundingClientRect().width /
-                          doc.width;
-                        const original = doc;
-                        gesture(
-                          event,
-                          (dx, dy, pointer) => {
-                            if (mode === "swap") {
-                              const target = swapTargetAt(pointer, cell.slot);
-                              setSwapDrag((current) =>
-                                current?.source === cell.slot &&
-                                current.target === target
-                                  ? current
-                                  : { source: cell.slot, target },
-                              );
-                            }
-                            if (mode === "crop") {
-                              const px =
-                                Math.abs(cell.width - rect.width) < 1
-                                  ? 50
-                                  : Math.max(
-                                      0,
-                                      Math.min(
-                                        100,
-                                        image.panX +
-                                          (dx /
-                                            scale /
-                                            (cell.width - rect.width)) *
-                                            100,
-                                      ),
-                                    );
-                              const py =
-                                Math.abs(cell.height - rect.height) < 1
-                                  ? 50
-                                  : Math.max(
-                                      0,
-                                      Math.min(
-                                        100,
-                                        image.panY +
-                                          (dy /
-                                            scale /
-                                            (cell.height - rect.height)) *
-                                            100,
-                                      ),
-                                    );
-                              setDocument(
-                                {
-                                  ...original,
-                                  images: original.images.map((entry) =>
-                                    entry.id === image.id
-                                      ? { ...entry, panX: px, panY: py }
-                                      : entry,
-                                  ),
-                                },
-                                false,
-                              );
-                            }
-                          },
-                          (e) => {
-                            if (mode === "swap") {
-                              const target = swapTargetAt(e, cell.slot);
-                              if (target !== null) swap(cell.slot, target);
-                            }
-                          },
-                        );
-                      }}
+                    <ContextMenu
+                      key={image.id}
+                      actions={imageActions(image.id, cell.slot)}
                     >
-                      <img
-                        draggable={false}
-                        src={image.url}
-                        alt={image.name}
+                      <div
+                        className={`collage-tile ${selectedId === image.id ? "is-selected" : ""} ${swapDrag?.source === cell.slot ? "is-swap-source" : ""} ${swapDrag?.target === cell.slot ? "is-swap-target" : ""}`}
+                        data-slot={cell.slot}
+                        role="button"
+                        aria-pressed={selectedId === image.id}
+                        tabIndex={busy ? -1 : 0}
+                        aria-label={`Select ${image.name}; drag to ${mode === "swap" ? "swap images" : "adjust crop"}`}
                         style={{
-                          left: `${(rect.x / cell.width) * 100}%`,
-                          top: `${(rect.y / cell.height) * 100}%`,
-                          width: `${(rect.width / cell.width) * 100}%`,
-                          height: `${(rect.height / cell.height) * 100}%`,
+                          left: `${(cell.x / doc.width) * 100}%`,
+                          top: `${(cell.y / doc.height) * 100}%`,
+                          width: `${(cell.width / doc.width) * 100}%`,
+                          height: `${(cell.height / doc.height) * 100}%`,
                         }}
-                      />
-                      <span className="tile-number">{cell.slot + 1}</span>
-                      {swapDrag?.source === cell.slot && (
-                        <span className="swap-indicator" aria-hidden="true">
-                          <Move />
-                          <span>Moving</span>
-                        </span>
-                      )}
-                      {swapDrag?.target === cell.slot && (
-                        <span className="swap-indicator" aria-hidden="true">
-                          <ArrowLeftRight />
-                          <span>Swap here</span>
-                        </span>
-                      )}
-                    </div>
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            setSelected(image.id);
+                          }
+                        }}
+                        onClick={() => setSelected(image.id)}
+                        onPointerDown={(event) => {
+                          setSelected(image.id);
+                          const scale =
+                            sheet.current!.getBoundingClientRect().width /
+                            doc.width;
+                          const original = doc;
+                          gesture(
+                            event,
+                            (dx, dy, pointer) => {
+                              if (mode === "swap") {
+                                const target = swapTargetAt(pointer, cell.slot);
+                                setSwapDrag((current) =>
+                                  current?.source === cell.slot &&
+                                  current.target === target
+                                    ? current
+                                    : { source: cell.slot, target },
+                                );
+                              }
+                              if (mode === "crop") {
+                                const px =
+                                  Math.abs(cell.width - rect.width) < 1
+                                    ? 50
+                                    : Math.max(
+                                        0,
+                                        Math.min(
+                                          100,
+                                          image.panX +
+                                            (dx /
+                                              scale /
+                                              (cell.width - rect.width)) *
+                                              100,
+                                        ),
+                                      );
+                                const py =
+                                  Math.abs(cell.height - rect.height) < 1
+                                    ? 50
+                                    : Math.max(
+                                        0,
+                                        Math.min(
+                                          100,
+                                          image.panY +
+                                            (dy /
+                                              scale /
+                                              (cell.height - rect.height)) *
+                                              100,
+                                        ),
+                                      );
+                                setDocument(
+                                  {
+                                    ...original,
+                                    images: original.images.map((entry) =>
+                                      entry.id === image.id
+                                        ? { ...entry, panX: px, panY: py }
+                                        : entry,
+                                    ),
+                                  },
+                                  false,
+                                );
+                              }
+                            },
+                            (e) => {
+                              if (mode === "swap") {
+                                const target = swapTargetAt(e, cell.slot);
+                                if (target !== null) swap(cell.slot, target);
+                              }
+                            },
+                          );
+                        }}
+                      >
+                        <img
+                          draggable={false}
+                          src={image.url}
+                          alt={image.name}
+                          style={{
+                            left: `${(rect.x / cell.width) * 100}%`,
+                            top: `${(rect.y / cell.height) * 100}%`,
+                            width: `${(rect.width / cell.width) * 100}%`,
+                            height: `${(rect.height / cell.height) * 100}%`,
+                          }}
+                        />
+                        <span className="tile-number">{cell.slot + 1}</span>
+                        {swapDrag?.source === cell.slot && (
+                          <span className="swap-indicator" aria-hidden="true">
+                            <Move />
+                            <span>Moving</span>
+                          </span>
+                        )}
+                        {swapDrag?.target === cell.slot && (
+                          <span className="swap-indicator" aria-hidden="true">
+                            <ArrowLeftRight />
+                            <span>Swap here</span>
+                          </span>
+                        )}
+                      </div>
+                    </ContextMenu>
                   );
                 })}
                 {geometry.dividers.map((divider) => (
@@ -965,15 +1120,14 @@ export function CollageEditor({ active }: { active: boolean }) {
             <h2>Suggested layouts</h2>
             <div>
               {["Balanced", "Wide story", "Spotlight"].map((label, index) => {
-                const layout = suggestLayout(
-                  doc.images,
-                  doc.width,
-                  doc.height,
-                  index,
-                );
+                const layout = suggestedLayouts[index];
+                const chosen =
+                  !!layout &&
+                  JSON.stringify(layout) === JSON.stringify(doc.layout);
                 return (
                   <button
                     key={label}
+                    aria-pressed={chosen}
                     disabled={busy || !layout}
                     onClick={() => setDocument({ ...doc, layout })}
                   >
@@ -996,7 +1150,7 @@ export function CollageEditor({ active }: { active: boolean }) {
             </div>
             <p>
               Choosing a layout or changing the image count rearranges frames.
-              Undo is always available.
+              Undo restores your previous arrangement.
             </p>
           </div>
         </section>
@@ -1177,12 +1331,16 @@ export function CollageEditor({ active }: { active: boolean }) {
                 <div className="collage-image-actions">
                   <IconButton
                     variant="ghost"
-                    tooltip="Earlier"
+                    tooltip={
+                      doc.images[0]?.id === selectedId
+                        ? "Already the first image"
+                        : "Move earlier"
+                    }
                     aria-label="Move image earlier"
-                    disabled={busy || doc.images[0].id === selected}
+                    disabled={busy || doc.images[0].id === selectedId}
                     onClick={() => {
                       const index = doc.images.findIndex(
-                        (image) => image.id === selected,
+                        (image) => image.id === selectedId,
                       );
                       swap(index, index - 1);
                     }}
@@ -1191,14 +1349,19 @@ export function CollageEditor({ active }: { active: boolean }) {
                   </IconButton>
                   <IconButton
                     variant="ghost"
-                    tooltip="Later"
+                    tooltip={
+                      doc.images[doc.images.length - 1]?.id === selectedId
+                        ? "Already the last image"
+                        : "Move later"
+                    }
                     aria-label="Move image later"
                     disabled={
-                      busy || doc.images[doc.images.length - 1]?.id === selected
+                      busy ||
+                      doc.images[doc.images.length - 1]?.id === selectedId
                     }
                     onClick={() => {
                       const index = doc.images.findIndex(
-                        (image) => image.id === selected,
+                        (image) => image.id === selectedId,
                       );
                       swap(index, index + 1);
                     }}
@@ -1221,7 +1384,7 @@ export function CollageEditor({ active }: { active: boolean }) {
                     tooltip="Remove"
                     disabled={busy}
                     aria-label="Remove image"
-                    onClick={remove}
+                    onClick={() => remove()}
                   >
                     <Trash2 />
                   </IconButton>

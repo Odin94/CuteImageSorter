@@ -160,6 +160,7 @@ struct MediaFile {
     extension: String,
     kind: MediaKind,
     size: u64,
+    preview_pixels: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -707,6 +708,32 @@ fn staged_path_for_recovery_journal(journal: &Path) -> Option<PathBuf> {
     )
 }
 
+fn read_regular_file_bounded(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_file() || metadata.len() > limit as u64 {
+        return Err(io::Error::other(
+            "file is not regular or exceeds the size limit",
+        ));
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other("file is not regular"));
+    }
+    let mut bytes = Vec::new();
+    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(io::Error::other("file exceeds the size limit"));
+    }
+    Ok(bytes)
+}
+
 fn recover_staged_moves(directory: &Path, warnings: &mut Vec<String>) {
     let Ok(entries) = fs::read_dir(directory) else {
         return;
@@ -720,10 +747,17 @@ fn recover_staged_moves(directory: &Path, warnings: &mut Vec<String>) {
         if !is_journal {
             continue;
         }
-        let Some(record) = fs::read(&journal)
-            .ok()
-            .and_then(|bytes| parse_recovery_record(&bytes))
-        else {
+        let bytes = match read_regular_file_bounded(&journal, 64 * 1024) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warnings.push(format!(
+                    "Could not read recovery journal {}: {error}",
+                    journal.display()
+                ));
+                continue;
+            }
+        };
+        let Some(record) = parse_recovery_record(&bytes) else {
             let incomplete_without_staged_file = staged_path_for_recovery_journal(&journal)
                 .is_some_and(|staged| {
                     fs::symlink_metadata(staged)
@@ -757,9 +791,10 @@ fn recover_staged_moves(directory: &Path, warnings: &mut Vec<String>) {
             let identity = FileIdentity::from_metadata(&metadata);
             identity.size == record.size && identity.modified_nanos == record.modified_nanos
         });
-        let destination_is_complete = fs::read(&commit)
-            .is_ok_and(|contents| contents == RECOVERY_COMMIT_MAGIC)
-            && destination_matches;
+        let destination_is_complete =
+            read_regular_file_bounded(&commit, RECOVERY_COMMIT_MAGIC.len())
+                .is_ok_and(|contents| contents == RECOVERY_COMMIT_MAGIC)
+                && destination_matches;
         if record.original.exists() && !record.staged.exists() {
             let _ = remove_recovery_journal(&journal);
             continue;
@@ -807,7 +842,10 @@ fn output_marker_contents(path: &Path, marker_key: &[u8; 32]) -> Vec<u8> {
 }
 
 fn has_valid_output_marker(path: &Path, marker_key: &[u8; 32]) -> bool {
-    let Ok(contents) = fs::read(path.join(OUTPUT_MARKER_NAME)) else {
+    let Ok(contents) = read_regular_file_bounded(
+        &path.join(OUTPUT_MARKER_NAME),
+        OUTPUT_MARKER_MAGIC.len() + 32,
+    ) else {
         return false;
     };
     contents == output_marker_contents(path, marker_key)
@@ -889,6 +927,15 @@ fn collect_media_file(
             extension,
             kind,
             size: metadata.len(),
+            preview_pixels: if matches!(kind, MediaKind::Image) {
+                image::ImageReader::open(&path)
+                    .ok()
+                    .and_then(|reader| reader.with_guessed_format().ok())
+                    .and_then(|reader| reader.into_dimensions().ok())
+                    .map(|(width, height)| u64::from(width) * u64::from(height))
+            } else {
+                None
+            },
         },
         record: FileRecord {
             path,
@@ -904,50 +951,67 @@ fn collect_media(
     output: &mut Vec<CollectedFile>,
     warnings: &mut Vec<String>,
 ) -> Result<(), String> {
-    recover_staged_moves(directory, warnings);
-    let entries = fs::read_dir(directory)
-        .map_err(|error| format!("Could not read {}: {error}", directory.display()))?;
-
-    for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
+    let mut pending = vec![directory.to_path_buf()];
+    let mut visited = 0usize;
+    while let Some(current) = pending.pop() {
+        recover_staged_moves(&current, warnings);
+        let entries = match fs::read_dir(&current) {
+            Ok(entries) => entries,
             Err(error) => {
-                warnings.push(format!(
-                    "Could not read an entry in {}: {error}",
-                    directory.display()
-                ));
+                let message = format!("Could not read {}: {error}", current.display());
+                if current == directory {
+                    return Err(message);
+                }
+                warnings.push(message);
                 continue;
             }
         };
-        let path = entry.path();
-        let file_type = match entry.file_type() {
-            Ok(file_type) => file_type,
-            Err(error) => {
-                warnings.push(format!("Could not inspect {}: {error}", path.display()));
+        for entry in entries {
+            visited += 1;
+            if visited > 200_000 {
+                return Err(
+                    "Folder scan exceeded 200,000 entries. Choose a smaller source folder.".into(),
+                );
+            }
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    warnings.push(format!(
+                        "Could not read an entry in {}: {error}",
+                        current.display()
+                    ));
+                    continue;
+                }
+            };
+            let path = entry.path();
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(error) => {
+                    warnings.push(format!("Could not inspect {}: {error}", path.display()));
+                    continue;
+                }
+            };
+            if file_type.is_dir() {
+                if context.recursive
+                    && !is_hidden(&path)
+                    && !should_skip_directory(&path, context.excluded, context.marker_key)
+                {
+                    pending.push(path);
+                }
                 continue;
             }
-        };
-        if file_type.is_dir() {
-            if context.recursive
-                && !is_hidden(&path)
-                && !should_skip_directory(&path, context.excluded, context.marker_key)
-                && let Err(error) = collect_media(&path, context, output, warnings)
-            {
-                warnings.push(error);
+            if !file_type.is_file() {
+                continue;
             }
-            continue;
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    warnings.push(format!("Could not inspect {}: {error}", path.display()));
+                    continue;
+                }
+            };
+            collect_media_file(path, metadata, context, output);
         }
-        if !file_type.is_file() {
-            continue;
-        }
-        let metadata = match entry.metadata() {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                warnings.push(format!("Could not inspect {}: {error}", path.display()));
-                continue;
-            }
-        };
-        collect_media_file(path, metadata, context, output);
     }
     Ok(())
 }
@@ -1208,11 +1272,11 @@ async fn scan_media(
                 "Some source items could not be read, so sorting did not start:\n{summary}"
             ));
         }
-        collected.sort_by(|left, right| {
-            left.dto
-                .relative_path
-                .to_lowercase()
-                .cmp(&right.dto.relative_path.to_lowercase())
+        collected.sort_by_cached_key(|file| {
+            (
+                file.dto.relative_path.to_lowercase(),
+                file.record.path.clone(),
+            )
         });
 
         let mut files = HashMap::new();
@@ -1533,6 +1597,15 @@ fn stage_source(
     expected: &FileIdentity,
     destination: &Path,
 ) -> io::Result<StagedSource> {
+    stage_source_with_sync(source, expected, destination, sync_directory)
+}
+
+fn stage_source_with_sync(
+    source: &Path,
+    expected: &FileIdentity,
+    destination: &Path,
+    syncer: impl Fn(&Path) -> io::Result<()>,
+) -> io::Result<StagedSource> {
     let parent = source
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "source has no parent"))?;
@@ -1561,7 +1634,7 @@ fn stage_source(
         let prepare_result = journal_file
             .write_all(&journal_bytes)
             .and_then(|()| journal_file.sync_all())
-            .and_then(|()| sync_directory(parent));
+            .and_then(|()| syncer(parent));
         drop(journal_file);
         if let Err(error) = prepare_result {
             let _ = remove_recovery_journal(&journal);
@@ -1570,15 +1643,22 @@ fn stage_source(
         match rename_no_replace(source, &staged) {
             Ok(()) => {
                 if verify_identity_at_path(&staged, expected).is_ok() {
-                    sync_directory(parent)?;
+                    if let Err(error) = sync_rename_or_rollback(source, &staged, &[parent], &syncer)
+                    {
+                        if source.exists() && !staged.exists() {
+                            let _ = remove_recovery_journal(&journal);
+                        }
+                        return Err(error);
+                    }
                     return Ok(StagedSource {
                         path: staged,
                         journal,
                         commit,
                     });
                 }
-                let _ = rename_no_replace(&staged, source);
-                let _ = remove_recovery_journal(&journal);
+                if rename_no_replace(&staged, source).is_ok() {
+                    let _ = remove_recovery_journal(&journal);
+                }
                 return Err(io::Error::other(
                     "the source changed while it was being secured for copying",
                 ));
@@ -2493,6 +2573,42 @@ mod tests {
         ));
         assert_eq!(fs::read(&destination).expect("read destination"), b"first");
         fs::remove_dir_all(root).expect("remove sandbox");
+    }
+
+    #[test]
+    fn failed_staging_sync_restores_original_for_retry() {
+        let root = sandbox("staging-sync-failure");
+        let source = root.join("source.jpg");
+        fs::write(&source, b"safe").unwrap();
+        let identity = FileIdentity::from_metadata(&fs::metadata(&source).unwrap());
+        let calls = std::cell::Cell::new(0);
+        let result = stage_source_with_sync(&source, &identity, &root.join("dest.jpg"), |_| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 2 {
+                Err(io::Error::other("injected sync failure"))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(&source).unwrap(), b"safe");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn oversized_recovery_looking_file_is_preserved_without_unbounded_reads() {
+        let root = sandbox("oversized-journal");
+        let journal = root.join(format!("{RECOVERY_PREFIX}{}.bin", Uuid::new_v4().simple()));
+        File::create(&journal)
+            .unwrap()
+            .set_len(1024 * 1024 * 1024)
+            .unwrap();
+        let mut warnings = Vec::new();
+        recover_staged_moves(&root, &mut warnings);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(fs::metadata(&journal).unwrap().len(), 1024 * 1024 * 1024);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

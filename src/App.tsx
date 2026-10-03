@@ -1,3 +1,8 @@
+import {
+  useBlocker,
+  useNavigate,
+  useRouterState,
+} from "@tanstack/react-router";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -29,10 +34,11 @@ import {
   useMemo,
   useRef,
   useState,
+  lazy,
+  Suspense,
 } from "react";
 import { toast, Toaster } from "sonner";
 
-import { CollageEditor } from "@/components/CollageEditor";
 import { SorterImagePreview } from "@/components/SorterImagePreview";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
@@ -49,6 +55,12 @@ import {
   type Direction,
 } from "@/lib/sorting";
 
+const CollageEditor = lazy(() =>
+  import("@/components/CollageEditor").then((module) => ({
+    default: module.CollageEditor,
+  })),
+);
+
 type MediaKind = "image" | "video" | "audio";
 type AppView = "setup" | "sorting" | "collage";
 
@@ -60,6 +72,7 @@ type MediaFile = {
   extension: string;
   kind: MediaKind;
   size: number;
+  previewPixels?: number | null;
 };
 
 type TargetFolder = {
@@ -159,7 +172,10 @@ function unloadPreload(element: HTMLImageElement | HTMLMediaElement) {
 }
 
 function App() {
-  const [view, setView] = useState<AppView>("setup");
+  const navigate = useNavigate();
+  const workspace = useRouterState({
+    select: (state) => state.location.pathname,
+  });
   const [sourceSelection, setSourceSelection] =
     useState<SourceSelection | null>(null);
   const [sourceDragActive, setSourceDragActive] = useState(false);
@@ -174,7 +190,15 @@ function App() {
   const [retryFiles, setRetryFiles] = useState<MediaFile[]>([]);
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [totalFiles, setTotalFiles] = useState(0);
+  const view: AppView =
+    workspace === "/collage"
+      ? "collage"
+      : sessionId === null
+        ? "setup"
+        : "sorting";
   const [isScanning, setIsScanning] = useState(false);
+  const [collageOpened, setCollageOpened] = useState(false);
+  if (view === "collage" && !collageOpened) setCollageOpened(true);
   const [dragTarget, setDragTarget] = useState<string | null>(null);
   const [pendingMoves, setPendingMoves] = useState(0);
   const inFlight = useRef(new Set<string>());
@@ -184,6 +208,14 @@ function App() {
   const preloadCache = useRef(
     new Map<string, HTMLImageElement | HTMLMediaElement>(),
   );
+  useBlocker({
+    shouldBlockFn: () => {
+      if (pendingMovesRef.current === 0 && !scanInFlight.current) return false;
+      toast("Please wait for the current operation to finish");
+      return true;
+    },
+    enableBeforeUnload: false,
+  });
   const sourcePath = sourceSelection?.basePath ?? "";
   const clearPreloads = useCallback(() => {
     preloadCache.current.forEach(unloadPreload);
@@ -192,7 +224,7 @@ function App() {
 
   const current = retryFiles[0] ?? files[cursor];
   const remainingCount = files.length - cursor + retryFiles.length;
-  const sortedCount = totalFiles - remainingCount;
+  const sortedCount = Math.max(0, totalFiles - remainingCount - pendingMoves);
   const progress = totalFiles ? (sortedCount / totalFiles) * 100 : 0;
   const lookaheadFiles = useMemo(() => {
     const retries = retryFiles.slice(1, 5);
@@ -216,11 +248,11 @@ function App() {
       clearPreloads();
       return;
     }
-    let imageBudget = 128 * 1024 * 1024;
+    let imageBudget = 32_000_000;
     const lookahead = lookaheadFiles.filter((file) => {
       if (file.kind !== "image") return true;
-      if (file.size > imageBudget) return false;
-      imageBudget -= file.size;
+      if (!file.previewPixels || file.previewPixels > imageBudget) return false;
+      imageBudget -= file.previewPixels;
       return true;
     });
     const desiredIds = new Set(lookahead.map((file) => file.id));
@@ -252,6 +284,7 @@ function App() {
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     void getCurrentWindow()
       .onCloseRequested((event) => {
@@ -263,9 +296,18 @@ function App() {
         });
       })
       .then((cleanup) => {
-        unlisten = cleanup;
-      });
-    return () => unlisten?.();
+        if (disposed) cleanup();
+        else unlisten = cleanup;
+      })
+      .catch((error: unknown) =>
+        toast.error("Couldn’t protect pending moves", {
+          description: errorMessage(error),
+        }),
+      );
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, []);
 
   const applySourceSelection = useCallback((selection: SourceSelection) => {
@@ -284,21 +326,25 @@ function App() {
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
     let disposed = false;
-    let unlistenDrag: (() => void) | undefined;
-    let unlistenDrop: (() => void) | undefined;
+    const cleanups: (() => void)[] = [];
+    const retainCleanup = (cleanup: () => void) => {
+      if (disposed) cleanup();
+      else cleanups.push(cleanup);
+    };
     const appWindow = getCurrentWindow();
 
     void Promise.all([
-      appWindow.onDragDropEvent((event) => {
-        if (view !== "setup" || isScanning) return;
-        if (event.payload.type === "enter") setSourceDragActive(true);
-        if (event.payload.type === "leave" || event.payload.type === "drop")
-          setSourceDragActive(false);
-      }),
-      appWindow.listen<NativeSourceDrop>(
-        "native-source-drop",
-        ({ payload }) => {
-          if (view !== "setup" || isScanning) return;
+      appWindow
+        .onDragDropEvent((event) => {
+          if (disposed || view !== "setup" || isScanning) return;
+          if (event.payload.type === "enter") setSourceDragActive(true);
+          if (event.payload.type === "leave" || event.payload.type === "drop")
+            setSourceDragActive(false);
+        })
+        .then(retainCleanup),
+      appWindow
+        .listen<NativeSourceDrop>("native-source-drop", ({ payload }) => {
+          if (disposed || view !== "setup" || isScanning) return;
           setSourceDragActive(false);
           void invoke<SourceSelection>("accept_source_drop", {
             token: payload.token,
@@ -317,22 +363,19 @@ function App() {
                 description: errorMessage(error),
               });
             });
-        },
-      ),
-    ]).then(([dragCleanup, dropCleanup]) => {
-      if (disposed) {
-        dragCleanup();
-        dropCleanup();
-        return;
-      }
-      unlistenDrag = dragCleanup;
-      unlistenDrop = dropCleanup;
-    });
+        })
+        .then(retainCleanup),
+    ]).catch(
+      (error: unknown) =>
+        !disposed &&
+        toast.error("Drag and drop is unavailable", {
+          description: errorMessage(error),
+        }),
+    );
 
     return () => {
       disposed = true;
-      unlistenDrag?.();
-      unlistenDrop?.();
+      cleanups.forEach((cleanup) => cleanup());
       setSourceDragActive(false);
     };
   }, [applySourceSelection, isScanning, view]);
@@ -453,7 +496,6 @@ function App() {
       setRetryFiles([]);
       setTotalFiles(discovered.length);
       setSessionId(result.sessionId);
-      setView("sorting");
       if (!discovered.length) {
         toast("No supported media found", {
           description: "Try including subfolders or choose another folder.",
@@ -520,7 +562,8 @@ function App() {
   useEffect(() => {
     if (view !== "sorting" || !current) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.repeat || event.metaKey || event.ctrlKey || event.altKey)
+        return;
       if (
         event.target instanceof Element &&
         event.target.closest(
@@ -548,7 +591,6 @@ function App() {
       });
       return;
     }
-    setView("setup");
     setFiles([]);
     setCursor(0);
     setRetryFiles([]);
@@ -569,14 +611,14 @@ function App() {
             <button
               aria-pressed={view !== "collage"}
               disabled={pendingMoves > 0 || isScanning}
-              onClick={() => setView(sessionId === null ? "setup" : "sorting")}
+              onClick={() => void navigate({ to: "/" })}
             >
               Sort
             </button>
             <button
               aria-pressed={view === "collage"}
               disabled={pendingMoves > 0 || isScanning}
-              onClick={() => setView("collage")}
+              onClick={() => void navigate({ to: "/collage" })}
             >
               Collage
             </button>
@@ -587,14 +629,17 @@ function App() {
             </div>
             <span data-tauri-drag-region>CuteImageSorter</span>
           </div>
-          <div className="titlebar-sprinkles" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-          </div>
         </header>
 
-        <CollageEditor active={view === "collage"} />
+        <Suspense
+          fallback={
+            <main className="workspace-loading" role="status">
+              Opening collage studio…
+            </main>
+          }
+        >
+          {collageOpened && <CollageEditor active={view === "collage"} />}
+        </Suspense>
         {view === "collage" ? null : view === "setup" ? (
           <SetupView
             sourceSelection={sourceSelection}
@@ -677,9 +722,6 @@ function SetupView({
       inert={isScanning ? true : undefined}
     >
       <section className="setup-intro">
-        <div className="eyebrow">
-          <Sparkles /> A tidier media folder awaits
-        </div>
         <h1>Let’s sort your little treasures.</h1>
         <p>
           Drop folders or a handful of files, name a few cozy corners, then
@@ -704,7 +746,9 @@ function SetupView({
           onClick={onChooseSource}
         >
           {sourcePath ? <FolderOpen /> : <FolderHeart />}
-          {sourceSelection ? sourceSelection.label : "Browse for a folder"}
+          <span>
+            {sourceSelection ? sourceSelection.label : "Browse for a folder"}
+          </span>
         </Button>
         {sourceSelection && (
           <div className="source-selection-summary">
@@ -744,6 +788,10 @@ function SetupView({
           <span className="folder-count">{targets.length} / 4 folders</span>
         </div>
 
+        <div className="target-form-labels" aria-hidden="true">
+          <span>Folder name</span>
+          <span>Destination path</span>
+        </div>
         <div className="target-form-list">
           {targets.map((target, index) => (
             <div className="target-form-row" key={target.id}>
@@ -784,7 +832,11 @@ function SetupView({
               </IconButton>
               <IconButton
                 variant="ghost"
-                tooltip="Remove"
+                tooltip={
+                  targets.length === 1
+                    ? "Keep at least one destination"
+                    : "Remove destination"
+                }
                 aria-label={`Remove ${target.label}`}
                 disabled={targets.length === 1}
                 onClick={() => onRemoveTarget(target.id)}

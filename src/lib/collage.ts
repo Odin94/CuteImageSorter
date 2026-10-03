@@ -342,6 +342,7 @@ export async function renderCollage(
   gap: number,
   background: string,
   format: "png" | "jpeg",
+  onProgress?: (completed: number, total: number) => void,
 ): Promise<Blob> {
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -352,6 +353,7 @@ export async function renderCollage(
   ctx.fillRect(0, 0, width, height);
   const cells = layoutGeometry(layout, width, height, gap).cells;
   try {
+    onProgress?.(0, cells.length);
     for (let start = 0; start < cells.length; start += 3) {
       const batch = cells.slice(start, start + 3);
       const decoded = await Promise.all(
@@ -369,6 +371,9 @@ export async function renderCollage(
         ctx.drawImage(image, rect.x, rect.y, rect.width, rect.height);
         ctx.restore();
       }
+      onProgress?.(Math.min(start + 3, cells.length), cells.length);
+      // Let progress paint and input events settle between decoding batches.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
     return await new Promise<Blob>((resolve, reject) =>
       canvas.toBlob(

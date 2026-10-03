@@ -2,7 +2,13 @@ use crate::AppState;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use image::{ImageFormat, ImageReader};
 use serde::Serialize;
-use std::{collections::HashSet, fs, io::Cursor, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashSet,
+    fs,
+    io::{self, Cursor, Write},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
@@ -45,6 +51,7 @@ fn import_paths(paths: Vec<PathBuf>, recursive: bool, capacity: usize) -> Import
     pending.reverse();
     let mut seen = HashSet::new();
     let mut visited = 0;
+    let mut scheduled = pending.len();
     let mut pixels = 0u64;
     while let Some(path) = pending.pop() {
         visited += 1;
@@ -66,11 +73,25 @@ fn import_paths(paths: Vec<PathBuf>, recursive: bool, capacity: usize) -> Import
         if meta.is_dir() {
             match fs::read_dir(&path) {
                 Ok(entries) => {
-                    let mut children: Vec<_> = entries
-                        .filter_map(Result::ok)
-                        .map(|e| e.path())
-                        .filter(|p| recursive || !p.is_dir())
-                        .collect();
+                    let mut children = Vec::new();
+                    for entry in entries {
+                        if scheduled >= 20_000 {
+                            result.warnings.push("Folder scan stopped after 20,000 entries. Choose a smaller folder.".into());
+                            break;
+                        }
+                        scheduled += 1;
+                        match entry {
+                            Ok(entry) => {
+                                let path = entry.path();
+                                if recursive || !path.is_dir() {
+                                    children.push(path);
+                                }
+                            }
+                            Err(error) => result
+                                .warnings
+                                .push(format!("Could not read folder entry: {error}")),
+                        }
+                    }
                     children.sort();
                     children.reverse();
                     pending.extend(children);
@@ -318,6 +339,21 @@ fn export_format(bytes: &[u8]) -> Result<ImageFormat, String> {
     Ok(format)
 }
 
+// Keep the previous export intact until the replacement is fully written and synced.
+fn save_export_with(
+    path: &Path,
+    write: impl FnOnce(&mut fs::File) -> io::Result<()>,
+) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("Export has no parent folder"))?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    write(temp.as_file_mut())?;
+    temp.as_file().sync_all()?;
+    temp.persist(path).map_err(|error| error.error)?;
+    crate::sync_directory(parent)
+}
+
 #[tauri::command]
 pub async fn collage_save(
     app: AppHandle,
@@ -348,7 +384,8 @@ pub async fn collage_save(
             return Ok(false);
         };
         let path = path.into_path().map_err(|e| e.to_string())?;
-        fs::write(path, optimize_export(bytes, expected)).map_err(|e| e.to_string())?;
+        let bytes = optimize_export(bytes, expected);
+        save_export_with(&path, |file| file.write_all(&bytes)).map_err(|e| e.to_string())?;
         Ok(true)
     })
     .await
@@ -357,6 +394,24 @@ pub async fn collage_save(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_export_preserves_previous_file_and_cleans_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("collage.png");
+        fs::write(&path, b"original").unwrap();
+        let result = save_export_with(&path, |file| {
+            file.write_all(b"partial")?;
+            Err(io::Error::other("injected disk full"))
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"original");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        save_export_with(&path, |file| file.write_all(b"replacement")).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"replacement");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
     fn assert_lossless_smaller(original: Vec<u8>, format: ImageFormat) -> Vec<u8> {
         let optimized = optimize_export(original.clone(), format);
         let before = image::load_from_memory(&original).unwrap().to_rgba8();

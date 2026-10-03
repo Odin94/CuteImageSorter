@@ -1,23 +1,3 @@
-.app-mode-switch {
-  position: absolute;
-  left: 20px;
-  display: flex;
-  gap: 4px;
-  -webkit-app-region: no-drag;
-}
-.app-mode-switch button {
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: #715b64;
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 750;
-}
-.app-mode-switch button[aria-pressed="true"] {
-  background: #f8dce4;
-  color: #853d52;
-}
 .collage-editor {
   position: relative;
   display: flex;
@@ -34,8 +14,8 @@
 .collage-editor [tabindex]:focus-visible,
 .collage-editor input:focus-visible,
 .collage-editor select:focus-visible {
-  outline: 2px solid #a34161;
-  outline-offset: 3px;
+  outline: 2px solid var(--ring);
+  outline-offset: 0;
 }
 .collage-editor ::selection {
   background: #f8dce4;
@@ -55,9 +35,10 @@
 }
 .collage-toolbar h1 {
   margin: 0;
-  font-size: 23px;
+  font-family: var(--font-heading);
+  font-size: 26px;
   letter-spacing: -0.025em;
-  font-weight: 850;
+  font-weight: 600;
 }
 .collage-toolbar p {
   margin: 3px 0 0;
@@ -103,7 +84,7 @@
   margin: 0;
 }
 .collage-section-heading span {
-  font-size: 11px;
+  font-size: 12px;
   color: #79636b;
   font-variant-numeric: tabular-nums;
 }
@@ -119,12 +100,12 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: 12px;
   margin-top: 15px;
 }
 .collage-hint,
 .collage-format-note {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.6;
   color: #79636b;
 }
@@ -156,7 +137,7 @@
   position: absolute;
   left: 6px;
   top: 6px;
-  font-size: 10px;
+  font-size: 12px;
   background: #fff;
   color: #493f43;
   border-radius: 4px;
@@ -167,11 +148,11 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 9px;
+  font-size: 12px;
 }
 .collage-format-note {
   margin-top: auto;
-  font-size: 10px;
+  font-size: 12px;
 }
 .collage-workspace {
   display: flex;
@@ -189,13 +170,11 @@
   flex: 1;
   min-height: 240px;
   padding: 30px;
-  background: #f1e9e5;
+  background: var(--surface-workspace);
   overflow: hidden;
 }
 .collage-sheet {
   position: relative;
-  width: min(100%, calc((100vh - 370px) * 4 / 3));
-  max-height: 100%;
   flex-shrink: 0;
   box-shadow: 0 8px 28px rgb(73 63 67 / 12%);
 }
@@ -213,7 +192,7 @@
 }
 .collage-tile.is-selected {
   outline: 2px solid #a34161;
-  outline-offset: 2px;
+  outline-offset: -2px;
   z-index: 1;
 }
 .collage-tile:active {
@@ -228,7 +207,7 @@
 }
 .collage-tile.is-swap-target {
   outline: 2px solid #a34161;
-  outline-offset: 2px;
+  outline-offset: -2px;
   z-index: 1;
 }
 .collage-tile.is-swap-target::after {
@@ -255,7 +234,7 @@
   border-radius: 5px;
   color: #853d52;
   background: #fffaf6;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 750;
   pointer-events: none;
 }
@@ -277,7 +256,7 @@
   color: #493f43;
   border-radius: 4px;
   padding: 2px 6px;
-  font-size: 10px;
+  font-size: 12px;
   opacity: 0;
 }
 .collage-tile:hover .tile-number,
@@ -326,7 +305,7 @@
   justify-content: space-between;
   gap: 10px;
   padding: 12px 22px;
-  font-size: 10px;
+  font-size: 12px;
   color: #79636b;
   font-variant-numeric: tabular-nums;
 }
@@ -349,10 +328,12 @@
   background: #fffefd;
   text-align: left;
   color: #5a4b50;
-  font-size: 11px;
+  font-size: 12px;
 }
-.collage-layouts button:hover:enabled {
-  border-color: #a34161;
+@media (hover: hover) and (pointer: fine) {
+  .collage-layouts button:hover:enabled {
+    border-color: var(--primary);
+  }
 }
 .collage-layouts button:disabled {
   opacity: 0.45;
@@ -367,7 +348,7 @@
   fill: #be8997;
 }
 .collage-layouts p {
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.5;
   color: #79636b;
   margin-bottom: 0;
@@ -386,7 +367,7 @@
 }
 .collage-inspector label {
   display: block;
-  font-size: 11px;
+  font-size: 12px;
   margin-bottom: 14px;
 }
 .collage-inspector label output {
@@ -404,12 +385,13 @@
   background: #fffefd;
   color: #493f43;
   font: inherit;
-  min-height: 32px;
+  min-height: 38px;
 }
 .collage-inspector input[type="range"] {
   display: block;
   width: 100%;
   margin: 8px 0 0;
+  min-height: 28px;
 }
 .collage-dimensions {
   display: grid;
@@ -434,12 +416,12 @@
   background: none;
   color: #853d52;
   padding: 0;
-  font-size: 10px;
+  font-size: 12px;
   text-decoration: underline;
   text-underline-offset: 3px;
 }
 .selected-image-name {
-  font-size: 11px;
+  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -459,7 +441,7 @@
   border-radius: 5px;
   padding: 6px 2px;
   background: transparent;
-  font-size: 10px;
+  font-size: 12px;
   color: #715b64;
 }
 .collage-mode button[aria-pressed="true"] {
@@ -479,7 +461,9 @@
   color: #a05b71;
 }
 .collage-empty h2 {
-  font-size: 23px;
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 26px;
   letter-spacing: -0.025em;
   line-height: 1.25;
   margin: 20px 0 10px;
@@ -493,7 +477,7 @@
 .collage-empty > span {
   display: block;
   color: #79636b;
-  font-size: 11px;
+  font-size: 12px;
   margin-top: 12px;
 }
 .collage-drop-overlay {
@@ -534,6 +518,8 @@
 @media (max-width: 750px) {
   .collage-body {
     grid-template-columns: 140px minmax(0, 1fr);
+    grid-auto-rows: max-content;
+    align-content: start;
   }
   .collage-inspector {
     grid-column: 1/-1;
@@ -557,6 +543,8 @@
     font-size: 18px;
   }
   .collage-stage {
+    flex: none;
+    height: clamp(300px, 50vw, 440px);
     min-height: 300px;
   }
   .collage-sheet {
@@ -607,4 +595,134 @@
 .collage-import-picker > div {
   display: grid;
   gap: 10px;
+}
+
+.collage-layouts button[aria-pressed="true"] {
+  border-color: var(--primary);
+  background: #fce7ec;
+}
+.collage-operation {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 24px;
+  background: var(--secondary);
+  font-size: 12px;
+}
+.collage-operation progress {
+  accent-color: var(--primary);
+  flex: 1;
+  height: 6px;
+}
+.collage-operation span {
+  min-width: 150px;
+}
+.collage-import-picker[open] {
+  animation: dialog-enter 160ms var(--ease-out);
+  transform-origin: center;
+}
+@keyframes dialog-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@media (max-width: 540px) {
+  .titlebar .brand {
+    font-size: 11px;
+    margin-right: 12px;
+    gap: 5px;
+  }
+  .brand-mark {
+    width: 23px;
+    height: 21px;
+  }
+  .app-mode-switch button {
+    padding: 8px;
+    min-height: 36px;
+  }
+  .collage-toolbar {
+    flex-wrap: wrap;
+  }
+  .collage-toolbar h1 {
+    font-size: 23px;
+  }
+  .collage-actions {
+    margin-left: auto;
+  }
+  .collage-actions > button:last-child {
+    font-size: 12px;
+    padding-inline: 12px;
+  }
+  .collage-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .collage-library {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .collage-library .import-actions {
+    grid-template-columns: 1fr 1fr;
+  }
+  .collage-library .collage-hint,
+  .collage-format-note {
+    display: none;
+  }
+  .collage-thumbnails {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    max-height: 190px;
+    overflow: auto;
+    margin-bottom: 0;
+  }
+  .collage-thumbnails img {
+    height: 48px;
+  }
+  .collage-thumbnails p {
+    font-size: 10px;
+  }
+  .collage-inspector {
+    grid-template-columns: minmax(0, 1fr);
+    border-left: 0;
+    padding-bottom: max(24px, env(safe-area-inset-bottom));
+  }
+  .collage-stage {
+    padding: 20px;
+    min-height: 300px;
+  }
+  .collage-layouts button {
+    min-height: 80px;
+  }
+  .collage-layouts > div {
+    gap: 8px;
+  }
+  .collage-canvas-footer {
+    padding: 12px;
+  }
+}
+@media (pointer: coarse) {
+  .collage-editor button,
+  .collage-inspector select,
+  .collage-inspector input[type="number"] {
+    min-height: 44px;
+  }
+  .collage-inspector input[type="range"] {
+    min-height: 36px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .collage-import-picker[open] {
+    animation-name: dialog-fade;
+  }
+}
+@keyframes dialog-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }

@@ -151,6 +151,9 @@ test("native clipboard imports export binary PNG and JPEG payloads", async ({
 }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Collage", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Paste image", exact: true }),
+  ).toBeVisible();
   await page.evaluate(() => {
     const canvas = document.createElement("canvas");
     canvas.width = 64;

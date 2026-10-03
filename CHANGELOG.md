@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Refined the cozy pastel interface with offline fonts, clearer controls, useful disabled-state explanations, image context menus, and responsive layouts while preserving the cat and folder colors.
+- Added workspace navigation that preserves the collage across switches and browser history, plus import/export progress and a lighter initial load.
+- Fixed distorted portrait previews, stale removal Undo actions, and cancelled crop/divider gestures. Bounded collage undo memory and preview preloading by decoded image size.
+- Hardened interrupted-move recovery and large folder scans, and made exports replace existing files atomically so a failed write cannot damage the previous export.
+
 - Sped up collage imports by reusing prepared images, and exports with parallel image decoding, binary desktop transfers, and faster lossless PNG compression.
 
 - Combined collage file and folder import under **Add images**, with mixed file/folder selection on macOS.

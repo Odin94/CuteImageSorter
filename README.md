@@ -10,7 +10,7 @@ A cozy, keyboard-first desktop app for sorting images, videos, and audio into up
 - Create missing destination folders automatically.
 - Move files on Rust worker threads while the next preview appears immediately.
 - Stream video and audio through a private, tokenized localhost server with full RFC range support.
-- Preload the next four previews without loading full media files.
+- Preload up to four image previews within a decoded-pixel memory budget.
 - Avoid overwrites by adding a numeric suffix when a filename already exists.
 - Preserve source placement by creating the selected destination beside each file.
 - Serialize atomic no-clobber moves so concurrent same-name files cannot overwrite one another.
@@ -29,9 +29,13 @@ Switch to **Collage** to compose images without moving or modifying originals.
 - Select an image to fill or fit its frame, zoom, adjust its position, or switch to **Drag to crop**. Earlier/later buttons provide a keyboard-accessible way to reorder images.
 - Set the canvas dimensions, white-by-default margin color, and margin width. Export a PNG or JPEG with dimensions from 800 to 6000 pixels per edge. Crowded layouts limit the maximum margin so every image remains visible.
 - Desktop exports automatically optimize PNG compression and JPEG entropy coding, retaining the smaller result. Optimization preserves dimensions, decoded pixels, and color profiles; JPEG receives no additional lossy encoding. Browser previews use the browser’s image encoder.
-- Undo/redo covers layout, crop, import, removal, and canvas changes. The collage stays available when switching to the sorter; export before closing the app.
+- Right-click an image or thumbnail to reorder, reset its crop, or remove it. Removal includes an Undo action until the next edit.
+- Undo/redo covers layout, crop, import, removal, and canvas changes. History retains up to 30 edits within an 80-megapixel image budget; older edits expire as needed. The collage stays available when switching to the sorter or navigating workspace history; export before closing the app.
+- Imports and exports report progress. Exports replace the chosen file atomically, preserving an existing file if encoding or writing fails.
 
 Native import supports JPEG, PNG, WebP, GIF, BMP, TIFF, and ICO, including mixed sizes and EXIF orientation. Animated files use a still frame. Each collage supports up to 24 images, with 2400px maximum working-copy edges and a 40-megapixel working-image budget. Oversized or unreadable files are reported, and valid images are still imported. Larger exports upscale these working copies. Source files are never altered by import or editing.
+
+Folder traversal is bounded to keep large collections responsive: collage import examines up to 20,000 entries per request, and sorting scans up to 200,000 entries per source. A warning appears when a limit or unreadable entry is encountered.
 
 ## Development
 
