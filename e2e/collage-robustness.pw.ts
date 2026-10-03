@@ -135,7 +135,7 @@ test("workspace URLs and browser history preserve the collage document", async (
   ).toBeVisible();
   await page.goForward();
   await expect(
-    page.getByRole("heading", { name: "Let’s sort your little treasures." }),
+    page.getByRole("heading", { name: "Organize your images" }),
   ).toBeVisible();
 });
 

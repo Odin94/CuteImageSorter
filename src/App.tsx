@@ -722,10 +722,10 @@ function SetupView({
       inert={isScanning ? true : undefined}
     >
       <section className="setup-intro">
-        <h1>Let’s sort your little treasures.</h1>
+        <h1>Organize your images</h1>
         <p>
-          Drop folders or a handful of files, name a few cozy corners, then
-          flick each treasure home with your arrow keys.
+          Select files or folders, choose destination folders, and use the arrow
+          keys to sort your files.
         </p>
       </section>
 
