@@ -11,7 +11,7 @@
     "fmt": "prettier --write .",
     "fmt:check": "prettier --check .",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
-    "test:web": "vitest run",
+    "test:web": "vitest run --exclude \"**/._*\"",
     "check": "pnpm fmt:check && pnpm lint && pnpm typecheck && pnpm test:web && pnpm test:rust",
     "preview": "vite preview",
     "tauri": "tauri",

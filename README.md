@@ -2,6 +2,12 @@
 
 A cozy, keyboard-first desktop app for sorting images, videos, and audio into up to four folders. Built with Tauri 2, React 19, TypeScript, Tailwind CSS 4, and shadcn/ui components.
 
+## Downloads
+
+Download Windows installers (`.exe` or `.msi`) and Linux x64 packages (`.AppImage` or `.deb`) from [GitHub Releases](https://github.com/Odin94/CuteImageSorter/releases). For AppImage, make the downloaded file executable before opening it.
+
+Release packages are built on GitHub's Windows and Ubuntu runners. To prepare a release, update the version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`, commit to `main`, and push the corresponding `v` tag. The release workflow runs the verification suite and uploads both platforms to a draft release; publish it once both builds succeed.
+
 ## Features
 
 - Browse for a folder or drag in folders, sets of files, or a mixture of both.

@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-2022
+            bundles: nsis,msi
+          - platform: ubuntu-22.04
+            bundles: deb,appimage
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils cmake nasm
+      - name: Configure Windows build tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "CMAKE_GENERATOR=Visual Studio 17 2022" >> $env:GITHUB_ENV
+          choco install nasm --yes --no-progress
+          "C:\Program Files\NASM" >> $env:GITHUB_PATH
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Verify formatting, lint, types, and tests
+        run: pnpm check
+      - name: Build release packages
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: CuteImageSorter v__VERSION__
+          releaseBody: Download the Windows installer (.exe or .msi) or Linux package (.AppImage or .deb) below.
+          releaseDraft: true
+          prerelease: false
+          args: --bundles ${{ matrix.bundles }}
