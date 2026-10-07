@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.1
+
+- Allow images in Collage Studio to zoom out to 10%, in both previews and exports.
+
+## 0.1.0
 
 - Refined the cozy pastel interface with offline fonts, clearer controls, useful disabled-state explanations, image context menus, and responsive layouts while preserving the cat and folder colors.
 - Added workspace navigation that preserves the collage across switches and browser history, plus import/export progress and a lighter initial load.

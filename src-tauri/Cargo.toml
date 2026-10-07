@@ -1,6 +1,6 @@
 [package]
 name = "cute-image-sorter"
-version = "0.1.0"
+version = "0.1.1"
 description = "A cozy, keyboard-first media sorter"
 authors = ["CuteImageSorter contributors"]
 edition = "2024"
