@@ -1,7 +1,5 @@
 mod collage;
 use filetime::FileTime;
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-use filetime::set_file_times;
 use hmac::{Hmac, Mac};
 use http_range::HttpRange;
 use serde::{Deserialize, Serialize};
@@ -252,7 +250,10 @@ fn load_or_create_marker_key() -> Result<[u8; 32], String> {
 }
 
 impl FileIdentity {
-    fn from_metadata(metadata: &fs::Metadata) -> Self {
+    fn from_metadata(_path: &Path, metadata: &fs::Metadata) -> io::Result<Self> {
+        #[cfg(windows)]
+        let _ = metadata;
+        #[cfg(not(windows))]
         let modified_nanos = metadata
             .modified()
             .ok()
@@ -261,30 +262,53 @@ impl FileIdentity {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            Self {
+            Ok(Self {
                 device: metadata.dev(),
                 inode: metadata.ino(),
                 size: metadata.len(),
                 modified_nanos,
-            }
+            })
         }
         #[cfg(windows)]
         {
-            use std::os::windows::fs::MetadataExt;
-            Self {
-                volume: metadata.volume_serial_number(),
-                index: metadata.file_index(),
-                size: metadata.file_size(),
-                modified_nanos,
-            }
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+            let file = OpenOptions::new()
+                .access_mode(0)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .open(_path)?;
+            Self::from_file(&file)
         }
         #[cfg(not(any(unix, windows)))]
         {
-            Self {
+            Ok(Self {
                 size: metadata.len(),
                 modified_nanos,
-            }
+            })
         }
+    }
+
+    #[cfg(windows)]
+    fn from_file(file: &File) -> io::Result<Self> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        };
+        let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+        // SAFETY: the file owns a live handle and the API initializes info on success.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the successful call above initialized every field.
+        let info = unsafe { info.assume_init() };
+        let ticks = (u64::from(info.ftLastWriteTime.dwHighDateTime) << 32)
+            | u64::from(info.ftLastWriteTime.dwLowDateTime);
+        Ok(Self {
+            volume: Some(info.dwVolumeSerialNumber),
+            index: Some((u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow)),
+            size: (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow),
+            modified_nanos: u128::from(ticks.saturating_sub(116_444_736_000_000_000)) * 100,
+        })
     }
 
     fn same_object_as(&self, other: &Self) -> bool {
@@ -370,7 +394,8 @@ fn verify_directory_record(record: &DirectoryRecord) -> Result<PathBuf, String> 
         .map_err(|error| format!("Could not inspect {}: {error}", canonical.display()))?;
     if !metadata.is_dir()
         || record.identity.as_ref().is_some_and(|identity| {
-            !identity.same_object_as(&FileIdentity::from_metadata(&metadata))
+            FileIdentity::from_metadata(&canonical, &metadata)
+                .map_or(true, |current| !identity.same_object_as(&current))
         })
     {
         return Err(format!(
@@ -396,7 +421,9 @@ fn verify_file_record(record: &FileRecord) -> Result<PathBuf, String> {
     }
     let metadata = fs::metadata(&canonical)
         .map_err(|error| format!("Could not inspect {}: {error}", canonical.display()))?;
-    if FileIdentity::from_metadata(&metadata) != record.identity {
+    if FileIdentity::from_metadata(&canonical, &metadata).map_err(|error| error.to_string())?
+        != record.identity
+    {
         return Err("The file changed after it was scanned; it was not moved.".to_string());
     }
     Ok(canonical)
@@ -565,9 +592,15 @@ fn validate_targets(
         let identity = if keep_structure {
             None
         } else {
-            Some(FileIdentity::from_metadata(&fs::metadata(&path).map_err(
-                |error| format!("Could not inspect {}: {error}", path.display()),
-            )?))
+            Some(
+                FileIdentity::from_metadata(
+                    &path,
+                    &fs::metadata(&path).map_err(|error| {
+                        format!("Could not inspect {}: {error}", path.display())
+                    })?,
+                )
+                .map_err(|error| error.to_string())?,
+            )
         };
         if let Some(identity) = &identity {
             if directory_identities
@@ -788,7 +821,9 @@ fn recover_staged_moves(directory: &Path, warnings: &mut Vec<String>) {
         }
         let commit = journal.with_extension("commit");
         let destination_matches = fs::metadata(&record.destination).is_ok_and(|metadata| {
-            let identity = FileIdentity::from_metadata(&metadata);
+            let Ok(identity) = FileIdentity::from_metadata(&record.destination, &metadata) else {
+                return false;
+            };
             identity.size == record.size && identity.modified_nanos == record.modified_nanos
         });
         let destination_is_complete =
@@ -912,6 +947,9 @@ fn collect_media_file(
     let Some((kind, extension)) = classify(&path) else {
         return;
     };
+    let Ok(identity) = FileIdentity::from_metadata(&path, &metadata) else {
+        return;
+    };
     let file_id = Uuid::new_v4().simple().to_string();
     let relative_path = path.strip_prefix(context.root).unwrap_or(&path);
     output.push(CollectedFile {
@@ -940,7 +978,7 @@ fn collect_media_file(
         record: FileRecord {
             path,
             source_root: context.root.to_path_buf(),
-            identity: FileIdentity::from_metadata(&metadata),
+            identity,
         },
     });
 }
@@ -1375,15 +1413,19 @@ fn copy_preserving_metadata(source: &Path, destination: &File, path: &Path) -> i
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn copy_preserving_metadata(source: &Path, _destination: &File, path: &Path) -> io::Result<()> {
+fn copy_preserving_metadata(source: &Path, destination: &File, path: &Path) -> io::Result<()> {
     let metadata = fs::metadata(source)?;
-    fs::copy(source, path)?;
-    fs::set_permissions(path, metadata.permissions())?;
-    set_file_times(
-        path,
-        FileTime::from_last_access_time(&metadata),
-        FileTime::from_last_modification_time(&metadata),
+    let mut source_file = File::open(source)?;
+    let mut destination_file = destination.try_clone()?;
+    destination_file.set_len(0)?;
+    destination_file.seek(SeekFrom::Start(0))?;
+    io::copy(&mut source_file, &mut destination_file)?;
+    filetime::set_file_handle_times(
+        destination,
+        Some(FileTime::from_last_access_time(&metadata)),
+        Some(FileTime::from_last_modification_time(&metadata)),
     )?;
+    fs::set_permissions(path, metadata.permissions())?;
     Ok(())
 }
 
@@ -1586,7 +1628,9 @@ where
 
 fn verify_identity_at_path(path: &Path, expected: &FileIdentity) -> io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || &FileIdentity::from_metadata(&metadata) != expected {
+    if metadata.file_type().is_symlink()
+        || &FileIdentity::from_metadata(path, &metadata)? != expected
+    {
         return Err(io::Error::other("the source changed during the move"));
     }
     Ok(())
@@ -1703,8 +1747,10 @@ fn published_destination_identity<F>(
 where
     F: FnOnce(&Path) -> io::Result<fs::Metadata>,
 {
-    match read_metadata(destination) {
-        Ok(metadata) => Ok(FileIdentity::from_metadata(&metadata)),
+    match read_metadata(destination)
+        .and_then(|metadata| FileIdentity::from_metadata(destination, &metadata))
+    {
+        Ok(identity) => Ok(identity),
         Err(error) => {
             let _ = fs::remove_file(destination);
             restore_staged_source(staged, source)?;
@@ -1737,9 +1783,11 @@ fn prepare_destination_folder(
         .canonicalize()
         .map_err(|error| format!("Could not inspect {}: {error}", folder.display()))?;
     let identity = FileIdentity::from_metadata(
+        &canonical,
         &fs::metadata(&canonical)
             .map_err(|error| format!("Could not inspect {}: {error}", canonical.display()))?,
-    );
+    )
+    .map_err(|error| error.to_string())?;
     if mark_output && !existed {
         let marker_path = canonical.join(OUTPUT_MARKER_NAME);
         let expected_contents = output_marker_contents(&canonical, marker_key);
@@ -1994,7 +2042,11 @@ fn resolve_media_file(state: &AppState, request_path: &str) -> Option<(PathBuf, 
         options.custom_flags(libc::O_NOFOLLOW);
     }
     let file = options.open(&path).ok()?;
-    if FileIdentity::from_metadata(&file.metadata().ok()?) != record.identity {
+    #[cfg(windows)]
+    let current_identity = FileIdentity::from_file(&file).ok()?;
+    #[cfg(not(windows))]
+    let current_identity = FileIdentity::from_metadata(&path, &file.metadata().ok()?).ok()?;
+    if current_identity != record.identity {
         return None;
     }
     Some((path, file))
@@ -2191,6 +2243,55 @@ mod tests {
         path.canonicalize().expect("canonical test sandbox")
     }
 
+    #[test]
+    fn file_identity_distinguishes_replacements_with_matching_metadata() {
+        let root = sandbox("file-identity");
+        let source = root.join("source.jpg");
+        let linked = root.join("linked.jpg");
+        let replacement = root.join("replacement.jpg");
+        fs::write(&source, b"same bytes").unwrap();
+        fs::hard_link(&source, &linked).unwrap();
+        fs::write(&replacement, b"same bytes").unwrap();
+        let metadata = fs::metadata(&source).unwrap();
+        filetime::set_file_mtime(
+            &replacement,
+            FileTime::from_last_modification_time(&metadata),
+        )
+        .unwrap();
+        let identity = FileIdentity::from_metadata(&source, &metadata).unwrap();
+        let linked_identity =
+            FileIdentity::from_metadata(&linked, &fs::metadata(&linked).unwrap()).unwrap();
+        assert!(identity.same_object_as(&linked_identity));
+        let replacement_identity =
+            FileIdentity::from_metadata(&replacement, &fs::metadata(&replacement).unwrap())
+                .unwrap();
+        assert_eq!(identity.size, replacement_identity.size);
+        assert_eq!(identity.modified_nanos, replacement_identity.modified_nanos);
+        assert!(!identity.same_object_as(&replacement_identity));
+        assert_ne!(identity, replacement_identity);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_file_identity_matches_open_handle_and_supports_directories() {
+        let root = sandbox("handle-identity");
+        let source = root.join("source.jpg");
+        fs::write(&source, b"original").unwrap();
+        let file = File::open(&source).unwrap();
+        let identity =
+            FileIdentity::from_metadata(&source, &fs::metadata(&source).unwrap()).unwrap();
+        assert_eq!(identity, FileIdentity::from_file(&file).unwrap());
+        let directory = FileIdentity::from_metadata(&root, &fs::metadata(&root).unwrap()).unwrap();
+        assert!(directory.volume.is_some());
+        assert!(directory.index.is_some());
+        assert!(
+            FileIdentity::from_metadata(&root.join("missing"), &file.metadata().unwrap()).is_err()
+        );
+        drop(file);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn collect_test_media(
         root: &Path,
         excluded: &HashSet<PathBuf>,
@@ -2362,8 +2463,11 @@ mod tests {
             let barrier = Arc::clone(&barrier);
             let target = target_record.clone();
             std::thread::spawn(move || {
-                let identity =
-                    FileIdentity::from_metadata(&fs::metadata(&source).expect("source metadata"));
+                let identity = FileIdentity::from_metadata(
+                    &source,
+                    &fs::metadata(&source).expect("source metadata"),
+                )
+                .expect("source identity");
                 barrier.wait();
                 move_without_replacement(&source, &identity, &target)
                     .expect("move without overwrite")
@@ -2457,9 +2561,13 @@ mod tests {
         let targets = HashMap::from([(
             "archive".to_string(),
             DirectoryRecord {
-                identity: Some(FileIdentity::from_metadata(
-                    &fs::metadata(&target).expect("target metadata"),
-                )),
+                identity: Some(
+                    FileIdentity::from_metadata(
+                        &target,
+                        &fs::metadata(&target).expect("target metadata"),
+                    )
+                    .expect("target identity"),
+                ),
                 path: target,
             },
         )]);
@@ -2580,7 +2688,8 @@ mod tests {
         let root = sandbox("staging-sync-failure");
         let source = root.join("source.jpg");
         fs::write(&source, b"safe").unwrap();
-        let identity = FileIdentity::from_metadata(&fs::metadata(&source).unwrap());
+        let identity =
+            FileIdentity::from_metadata(&source, &fs::metadata(&source).unwrap()).unwrap();
         let calls = std::cell::Cell::new(0);
         let result = stage_source_with_sync(&source, &identity, &root.join("dest.jpg"), |_| {
             calls.set(calls.get() + 1);
@@ -2649,7 +2758,8 @@ mod tests {
         let destination = root.join("destination.jpg");
         fs::write(&source, b"safe").expect("write source");
         let identity =
-            FileIdentity::from_metadata(&fs::metadata(&source).expect("source metadata"));
+            FileIdentity::from_metadata(&source, &fs::metadata(&source).expect("source metadata"))
+                .expect("source identity");
         let staged = stage_source(&source, &identity, &destination).expect("stage source");
         assert!(matches!(
             publish_copy_without_replacement(&staged.path, &destination)
@@ -2707,7 +2817,8 @@ mod tests {
         let destination = root.join("destination.jpg");
         fs::write(&source, b"recover me").expect("write source");
         let identity =
-            FileIdentity::from_metadata(&fs::metadata(&source).expect("source metadata"));
+            FileIdentity::from_metadata(&source, &fs::metadata(&source).expect("source metadata"))
+                .expect("source identity");
         let staged = stage_source(&source, &identity, &destination).expect("stage source");
         assert!(!source.exists());
         assert!(staged.path.exists());
@@ -2729,7 +2840,8 @@ mod tests {
         let destination = root.join("destination.jpg");
         fs::write(&source, b"already copied").expect("write source");
         let identity =
-            FileIdentity::from_metadata(&fs::metadata(&source).expect("source metadata"));
+            FileIdentity::from_metadata(&source, &fs::metadata(&source).expect("source metadata"))
+                .expect("source identity");
         let staged = stage_source(&source, &identity, &destination).expect("stage source");
         assert!(matches!(
             publish_copy_without_replacement(&staged.path, &destination)
@@ -2765,7 +2877,8 @@ mod tests {
             FileTime::from_last_modification_time(&source_metadata),
         )
         .expect("match destination modification time");
-        let identity = FileIdentity::from_metadata(&source_metadata);
+        let identity =
+            FileIdentity::from_metadata(&source, &source_metadata).expect("source identity");
         let staged = stage_source(&source, &identity, &destination).expect("stage source");
 
         let mut warnings = Vec::new();
@@ -2790,7 +2903,8 @@ mod tests {
         let destination = root.join("destination.jpg");
         fs::write(&source, b"already copied").expect("write source");
         let identity =
-            FileIdentity::from_metadata(&fs::metadata(&source).expect("source metadata"));
+            FileIdentity::from_metadata(&source, &fs::metadata(&source).expect("source metadata"))
+                .expect("source identity");
         let staged = stage_source(&source, &identity, &destination).expect("stage source");
         assert!(matches!(
             publish_copy_without_replacement(&staged.path, &destination)
@@ -2859,8 +2973,10 @@ mod tests {
                     "opaque-id".into(),
                     FileRecord {
                         identity: FileIdentity::from_metadata(
+                            &media,
                             &fs::metadata(&media).expect("media metadata"),
-                        ),
+                        )
+                        .expect("media identity"),
                         path: media,
                         source_root: root.clone(),
                     },
@@ -2935,6 +3051,13 @@ mod tests {
             fs::read(&source).expect("read source"),
             fs::read(&destination).expect("read destination")
         );
+        drop(destination_file);
+        #[cfg(windows)]
+        for path in [&source, &destination] {
+            let mut permissions = fs::metadata(path).unwrap().permissions();
+            permissions.set_readonly(false);
+            fs::set_permissions(path, permissions).unwrap();
+        }
         fs::remove_dir_all(root).expect("remove sandbox");
     }
 
@@ -2954,8 +3077,10 @@ mod tests {
         fs::write(&scanned_path, b"approved").expect("write approved file");
         let record = FileRecord {
             identity: FileIdentity::from_metadata(
+                &scanned_path,
                 &fs::metadata(&scanned_path).expect("scanned metadata"),
-            ),
+            )
+            .expect("scanned identity"),
             path: scanned_path,
             source_root: root.clone(),
         };
