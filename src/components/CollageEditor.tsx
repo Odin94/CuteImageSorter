@@ -1279,7 +1279,7 @@ export function CollageEditor({ active }: { active: boolean }) {
                     type="range"
                     aria-label="Zoom"
                     {...rangeProps}
-                    min={1}
+                    min={0.1}
                     max={3}
                     step={0.01}
                     value={selectedImage.zoom}
